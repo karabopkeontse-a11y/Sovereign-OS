@@ -95,5 +95,15 @@ class WorkspaceService:
             raise ValueError("Memory does not belong to the selected workspace.")
         return self.memory.delete(memory_id)
 
+
+    def verify(self, workspace_id: str, memory_id: str) -> MemoryRecord:
+        current = self.memory.get(memory_id)
+        if current is None or current.workspace_id != self._scope(workspace_id):
+            raise ValueError("Memory does not belong to the selected workspace.")
+        return self.memory.revise(
+            memory_id, current.content, source="user verified in workspace memory panel",
+            verified=True,
+        )
+
     def export_json(self, workspace_id: str) -> str:
         return self.memory.export_json(self._scope(workspace_id))
