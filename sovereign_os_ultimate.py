@@ -99,7 +99,7 @@ ENV_FILE = next(
     (candidate for candidate in ENV_CANDIDATES
      if candidate.is_file() and any(
          dotenv_values(candidate).get(key)
-         for key in ("GROQ_API_KEY", "OPENROUTER_API_KEY", "OLLAMA_MODEL")
+         for key in ("GROQ_API_KEY", "OPENROUTER_API_KEY", "CLOUDFLARE_API_TOKEN", "ZAI_API_KEY", "SAMBANOVA_API_KEY", "NVIDIA_API_KEY", "MISTRAL_API_KEY", "OLLAMA_MODEL")
      )),
     None,
 )
@@ -1285,6 +1285,7 @@ def main_page():
         ui.html('<span id="status-indicator" class="status-indicator">🟢 Online</span>')
         initial_model = MODEL_ROUTER.candidates[0].info.label if MODEL_ROUTER.candidates else "No provider configured"
         model_indicator = ui.label(f"Ready: {initial_model}").classes("files-empty")
+        ui.button("Model health", icon="monitor_heart", on_click=lambda: open_model_health()).props("outline color=primary dense")
         ui.space()
         ui.switch("Speak replies", value=False,
                   on_change=lambda e: state.update(auto_speak=e.value)
@@ -1380,6 +1381,41 @@ def main_page():
         if os.getenv("SOVEREIGN_PREMIUM_URL", "").strip():
             ui.link("View Sovereign premium options", os.getenv("SOVEREIGN_PREMIUM_URL", "").strip())
         ui.button("Close", on_click=premium_dialog.close).props("flat")
+
+    with ui.dialog() as model_health_dialog, ui.card().classes("glass-modal"):
+        ui.label("Model Provider Health").classes("modal-title")
+        ui.label("Configured providers only. Cooldowns are temporary and no credentials are shown.")
+        model_health_column = ui.column().classes("w-full")
+        with ui.row().classes("modal-actions w-full"):
+            ui.button("Refresh", icon="refresh", on_click=lambda: refresh_model_health())
+            ui.button("Close", on_click=model_health_dialog.close).props("flat")
+
+    def refresh_model_health():
+        model_health_column.clear()
+        snapshot = MODEL_ROUTER.health_snapshot()
+        if not snapshot:
+            with model_health_column:
+                ui.label("No model providers are configured.")
+        for item in snapshot:
+            state_label = "READY" if item["status"] == "ready" else "COOLDOWN"
+            detail = (
+                f'{item["provider"]} · {item["model"]} · {item["runtime"]} · {state_label} '
+                f'· successes {item["successes"]} · failures {item["failures"]}'
+            )
+            with model_health_column:
+                ui.label(detail).classes("text-sm")
+                if item["cooldown_reason"]:
+                    ui.label(item["cooldown_reason"]).classes("text-xs text-grey")
+                ui.separator()
+        if MODEL_ROUTER.configuration_warnings:
+            with model_health_column:
+                ui.label("Setup warnings").classes("font-bold")
+                for warning in MODEL_ROUTER.configuration_warnings:
+                    ui.label(warning).classes("text-xs")
+
+    def open_model_health():
+        refresh_model_health()
+        model_health_dialog.open()
 
     def _open_media_lightbox(kind: str):
         url = current_file.get("url")
