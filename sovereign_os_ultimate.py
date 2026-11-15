@@ -1112,7 +1112,7 @@ def main_page():
     state = {"persona": DEFAULT_PERSONA, "history": load_chat_history(), "auto_speak": False}
     current_file = {"path": None, "kind": "text"}
     recording_state = {"active": False, "stop": False}
-    speech_state = {"stop_event": None}
+    speech_state = {"stop_event": None, "cache": {}, "last": None}
 
     # ---- FIX 1: thread-safety helpers -------------------------------------
     # Blocking work (mic recording, transcription, TTS playback) always runs
@@ -1143,6 +1143,8 @@ def main_page():
         ui.switch("Speak replies", value=False,
                   on_change=lambda e: state.update(auto_speak=e.value)
                   ).props("color=amber")
+        replay_speech_button = ui.button("Replay", icon="replay", on_click=lambda: replay_last_speech()).props("outline color=primary")
+        replay_speech_button.disable()
         stop_speech_button = ui.button("Stop speech", icon="stop", on_click=lambda: stop_speech()).props("outline color=negative")
         stop_speech_button.disable()
         ui.button(icon="delete_sweep", on_click=lambda: clear_chat()).props("flat").tooltip("Clear chat history")
@@ -1314,12 +1316,35 @@ def main_page():
         stop_event = threading.Event()
         speech_state["stop_event"] = stop_event
         stop_speech_button.enable()
+        replay_speech_button.disable()
         try:
-            set_status("thinking", "🟡 Preparing voice — Stop is available")
-            path, boundaries = await synthesize_speech(text, stop_event=stop_event)
-            if stop_event.is_set():
-                return
-            segment = await run.io_bound(load_audio_file, path)
+            cached = speech_state["cache"].get(bubble_id)
+            if cached is None:
+                set_status("thinking", "🟡 Preparing voice — Stop is available")
+                path, boundaries = await synthesize_speech(text, stop_event=stop_event)
+                if stop_event.is_set():
+                    return
+                segment = await run.io_bound(load_audio_file, path)
+                if stop_event.is_set():
+                    return
+                cached = {"path": path, "boundaries": boundaries, "segment": segment, "text": text}
+                speech_state["cache"][bubble_id] = cached
+                speech_state["last"] = bubble_id
+                replay_speech_button.enable()
+
+                # Keep only the five most recent generated responses in memory/disk.
+                while len(speech_state["cache"]) > 5:
+                    oldest_id = next(iter(speech_state["cache"]))
+                    old = speech_state["cache"].pop(oldest_id)
+                    if speech_state["last"] == oldest_id:
+                        speech_state["last"] = bubble_id
+                    await run.io_bound(remove_audio_file, old["path"])
+            else:
+                path = cached["path"]
+                boundaries = cached["boundaries"]
+                segment = cached["segment"]
+                speech_state["last"] = bubble_id
+
             if stop_event.is_set():
                 return
             client.run_javascript(
@@ -1338,8 +1363,17 @@ def main_page():
             client.run_javascript("window.finishSpeechSync();")
             speech_state["stop_event"] = None
             stop_speech_button.disable()
-            if path:
+            # Keep successfully generated audio after Stop/finish so Replay is instant.
+            if path and bubble_id not in speech_state["cache"]:
                 await run.io_bound(remove_audio_file, path)
+
+    async def replay_last_speech():
+        bubble_id = speech_state.get("last")
+        cached = speech_state["cache"].get(bubble_id) if bubble_id else None
+        if not cached:
+            toast("No generated speech is available to replay yet.", "info")
+            return
+        await speak_safe(cached["text"], bubble_id)
 
     async def send_message(text: str = None):
         text = text if text is not None else message_input.value
