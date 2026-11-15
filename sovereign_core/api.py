@@ -79,7 +79,8 @@ class SovereignAPI:
             db.close()
         memories = self.workspaces.search(workspace.id, payload.message, limit=5)
         memory_context = "\n".join("- " + item.content for item in memories)
-        system = ("You are SovereignOS in the " + workspace.name + " workspace. Purpose: "
+        assistant_name = "Thothi, the customer-facing SmartFlow BW assistant powered by SovereignOS" if workspace.name == "SmartFlow BW" else "SovereignOS"
+        system = ("You are " + assistant_name + " in the " + workspace.name + " workspace. Purpose: "
                   + workspace.purpose + ". Use only this workspace context. Never claim to execute "
                   "external actions. Financial, publishing, destructive and physical-device actions "
                   "require human approval. Relevant memories:\n" + (memory_context or "(none)"))
@@ -180,6 +181,12 @@ def create_app(db_path=None, router=None, token=None):
              "status": "simulation", "unit": "%", "value": 62},
             {"id": "demo-power-01", "name": "Power monitor", "kind": "energy",
              "status": "simulation", "unit": "kWh", "value": 1.8}]}
+    @app.get("/api/v1/iot/devices/{device_id}/telemetry", dependencies=[Depends(authorize)])
+    def iot_telemetry(device_id: str):
+        samples = {"demo-water-01": {"unit": "%", "points": [58, 60, 61, 60, 62]}, "demo-power-01": {"unit": "kWh", "points": [1.2, 1.4, 1.5, 1.7, 1.8]}}
+        if device_id not in samples:
+            raise HTTPException(404, "Device not found")
+        return {"device_id": device_id, "simulation": True, **samples[device_id]}
     @app.get("/api/v1/approvals", dependencies=[Depends(authorize)])
     def approvals():
         return {"approvals": [], "note": "Remote approval queue is not configured."}
