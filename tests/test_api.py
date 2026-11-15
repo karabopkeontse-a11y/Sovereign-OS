@@ -56,6 +56,16 @@ class SovereignAPITests(unittest.TestCase):
                                 headers=self.headers,json={"message":"cross scope",
                                 "conversation_id":created.json()["conversation_id"]})
         self.assertEqual(result.status_code,404)
+    def test_conversation_messages_are_workspace_scoped(self):
+        ws=self.client.get("/api/v1/workspaces",headers=self.headers).json()["workspaces"]
+        a,b=ws[0],ws[1]
+        created=self.client.post("/api/v1/workspaces/"+a["id"]+"/chat",headers=self.headers,json={"message":"history check"})
+        cid=created.json()["conversation_id"]
+        own=self.client.get("/api/v1/workspaces/"+a["id"]+"/conversations/"+cid+"/messages",headers=self.headers)
+        other=self.client.get("/api/v1/workspaces/"+b["id"]+"/conversations/"+cid+"/messages",headers=self.headers)
+        self.assertEqual(own.status_code,200)
+        self.assertEqual(len(own.json()["messages"]),2)
+        self.assertEqual(other.status_code,404)
     def test_model_health_comes_from_router(self):
         data=self.client.get("/api/v1/models/health",headers=self.headers).json()
         self.assertEqual(data["providers"][0]["provider"],"Test")
