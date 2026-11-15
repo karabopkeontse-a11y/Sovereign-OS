@@ -69,11 +69,6 @@ class ModelRouterTests(unittest.TestCase):
         self.assertTrue(caught.exception.premium_required)
         self.assertIn("did not make a paid request", str(caught.exception))
 
-    def test_openrouter_paid_models_are_not_configurable(self):
-        # The router pins OpenRouter to openrouter/free in implementation.
-        self.assertIn("openrouter/free", open(ModelRouter.__module__.replace(".", "/") + ".py")
-                      .read() if False else "openrouter/free")
-
 
 if __name__ == "__main__":
     unittest.main()
