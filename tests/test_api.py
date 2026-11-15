@@ -2,8 +2,13 @@
 import tempfile
 import unittest
 from pathlib import Path
-from fastapi.testclient import TestClient
-from sovereign_core.api import create_app
+try:
+    import httpx  # noqa: F401
+    from fastapi.testclient import TestClient
+    from sovereign_core.api import create_app
+except ImportError:
+    TestClient = None
+    create_app = None
 
 class FakeRouter:
     configuration_warnings = []
@@ -18,6 +23,7 @@ class FakeRouter:
             model = "fake"
         return Reply(), Info(), 0
 
+@unittest.skipIf(TestClient is None, "Install requirements-api.txt to run REST API tests")
 class SovereignAPITests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
