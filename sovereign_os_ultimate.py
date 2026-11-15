@@ -525,7 +525,7 @@ def call_llm(persona_key: str, history: list, user_text: str) -> str:
     # Ordinary conversation is never automatically written to memory.
     try:
         recalled = MEMORY_STORE.search(GENERAL_MEMORY_SCOPE, user_text, limit=5)
-        memory_context = "\\n".join(
+        memory_context = "\n".join(
             f"- {item.content} (source: {item.source}; confidence: {item.confidence:.2f}; verified: {item.verified})"
             for item in recalled
         )
