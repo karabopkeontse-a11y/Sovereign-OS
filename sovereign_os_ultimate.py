@@ -1296,7 +1296,7 @@ def main_page():
         ui.button(icon="delete_sweep", on_click=lambda: clear_chat()).props("flat").tooltip("Clear chat history")
         ui.button("Memory", icon="psychology", on_click=lambda: open_memory_panel()).props("outline color=primary")
         workspace_select = ui.select(
-            {w.name: w.id for w in WORKSPACES},
+            WORKSPACE_SERVICE.select_options(),
             value=state["workspace_id"],
             on_change=lambda e: switch_workspace(e.value),
         ).classes("workspace-select").props("dark outlined dense")
