@@ -60,6 +60,8 @@ def is_capacity_error(exc: Exception) -> bool:
         "decommissioned", "maximum context length", "context_length_exceeded",
         "context window", "unauthorized", "invalid api key", "authentication",
         "timed out", "connection refused", "connection reset",
+        "no endpoints found", "tool calling is not supported",
+        "does not support tool calling", "tool use is not supported",
     )
     return any(marker in message for marker in markers)
 
@@ -92,8 +94,19 @@ class ModelRouter:
                                   max_tokens=self.max_tokens, temperature=self.temperature)
                     if "qwen3.8" in model or "qwen3.6" in model:
                         kwargs.update(reasoning_effort="none", reasoning_format="hidden")
+                    try:
+                        client = ChatGroq(**kwargs)
+                    except TypeError:
+                        kwargs.pop("reasoning_effort", None)
+                        kwargs.pop("reasoning_format", None)
+                        try:
+                            client = ChatGroq(**kwargs)
+                        except Exception:
+                            continue
+                    except Exception:
+                        continue
                     groups["groq"].append(ModelCandidate(
-                        ModelInfo("Groq", model, "cloud"), ChatGroq(**kwargs)
+                        ModelInfo("Groq", model, "cloud"), client
                     ))
             except ImportError:
                 pass
