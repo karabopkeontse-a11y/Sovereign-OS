@@ -4,13 +4,11 @@ Status: Build specification; implementation begins with the speech-control stabi
 
 ## Product boundary
 
-SovereignOS is the shared intelligence and execution platform. It owns reasoning orchestration, tool access, project memory, task planning, permissions, execution records, verification, and feedback.
+SovereignOS is a general-purpose, project-agnostic intelligence and execution platform. It owns reasoning orchestration, tool access, project memory, task planning, permissions, execution records, verification, and feedback.
 
-It exposes separate workspaces:
-- **Nikolai Creative Studio (NCS):** publishing, brand assets, SEO, content operations, marketing, lead discovery, customer workflows, and revenue experiments.
-- **SmartFlow BW / Thothi:** water-leak intelligence, customer-facing assistance, alerts, pilot operations, product support, and property/water-system workflows.
+There are no mandatory business-specific workspaces, personas, workflows, or assumptions. A user may operate in a general inbox or create any project from the UI. Projects can represent a business, software product, personal goal, research effort, household task, or any other problem domain. Each project receives its own purpose, goals, files, notes, memory namespace, and optional tool permissions.
 
-Thothi remains the SmartFlow-facing assistant and product identity. It calls SovereignOS capabilities through a controlled service interface; it is not a second copy of the SovereignOS application.
+External products and assistants may call SovereignOS through a controlled API when explicitly configured, but they are optional integrations—not part of the operating system's default identity.
 
 ## Core problem-solving cycle
 
@@ -31,9 +29,8 @@ A task is not marked complete until its verification criteria pass or the remain
 ## Target architecture
 
 ```
-NCS workspace ─────┐
-                   ├── SovereignOS Core API
-SmartFlow / Thothi ┘       |
+User-created projects ─── SovereignOS Core API
+General inbox ────────────┘       |
                            +-- Project & Memory Registry
                            +-- Problem Intake / Task State Machine
                            +-- Planner and Policy Gate
@@ -68,7 +65,7 @@ Statuses: `new`, `clarifying`, `diagnosing`, `planned`, `awaiting_approval`, `ru
 - Default to free/open-source and low-cost options; disclose recurring costs before adopting a paid dependency.
 - Never fabricate search results, weather, customer leads, metrics, test results, or completed actions.
 - Read-only tools may run under workspace policy. External publishing, messaging, payments, deletion, and irreversible changes require explicit authorization.
-- Keep NCS and SmartFlow customer data isolated by workspace.
+- Keep all user-created project data isolated by project/workspace namespace.
 - Use least-privilege tool permissions and allow-listed filesystem paths.
 - Store evidence references and concise summaries, not secrets or unnecessary personal data.
 - Every running task must support cancellation and a visible status.
@@ -95,15 +92,16 @@ Statuses: `new`, `clarifying`, `diagnosing`, `planned`, `awaiting_approval`, `ru
 - Add cancellation, retry policy, timeouts, and resumable task states.
 - Add structured evidence and completion criteria.
 
-### Milestone 3 — Activate NCS workspace
-- Load the NCS project brief, brand rules, Blogger/Facebook publishing workflow, content standards, and current blockers.
-- Add content QA and publish-ready verification.
-- Add lead/revenue experiments with measurable outcomes; no invented performance claims.
+### Milestone 3 — User-created project activation
+- Let users create a project from the UI and optionally attach its brief, files, goals, and constraints.
+- Keep project context and memory isolated; never preload named businesses or assume a project exists.
+- Provide reusable templates as optional starting points, not mandatory defaults.
 
-### Milestone 4 — Power SmartFlow / Thothi
-- Define a stable internal API for Thothi to submit tasks and retrieve approved answers/actions.
-- Connect water-leak knowledge, device/property context, alert workflows, and pilot feedback.
-- Add strict tenant/customer isolation and human escalation for uncertain or high-impact cases.
+### Milestone 4 — Interfaces and packaging
+- Stabilize the responsive web application and installable PWA.
+- Expose a versioned local API for the web client and future external clients.
+- Package Windows desktop with Tauri and Android with Capacitor only after the shared web interface and API pass acceptance tests.
+- Keep browser speech/audio playback on the client device; never rely on server-side speakers for a remote web client.
 
 ### Milestone 5 — Reliability and autonomy
 - Add scheduled jobs only after task execution and verification are dependable.
@@ -112,4 +110,4 @@ Statuses: `new`, `clarifying`, `diagnosing`, `planned`, `awaiting_approval`, `ru
 
 ## Definition of done for the first usable engine
 
-A user can submit a problem under NCS or SmartFlow; SovereignOS records it in the correct workspace, creates an evidence-based plan, requests approval for consequential actions, executes permitted steps, verifies results, and retains a resumable audit trail. A failed tool call is visible as a failure, not silently presented as success.
+A user can submit a problem in the general inbox or any project they created; SovereignOS records it in the correct namespace, creates an evidence-based plan, requests approval for consequential actions, executes permitted steps, verifies results, and retains a resumable audit trail. A failed tool call is visible as a failure, not silently presented as success.
