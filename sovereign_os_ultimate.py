@@ -542,29 +542,52 @@ def transcribe_raw_audio(raw_bytes: bytes) -> str:
 # TEXT-TO-SPEECH
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def synthesize_speech(text: str, voice: str = DEFAULT_VOICE) -> str:
-    """edge-tts is natively async, so this can be awaited directly (no thread needed)."""
+async def synthesize_speech(text: str, voice: str = DEFAULT_VOICE):
+    """Create speech plus word-level timing marks for precise UI synchronisation."""
     fd, path = tempfile.mkstemp(suffix=".mp3")
     os.close(fd)
+    boundaries = []
 
     async def _save():
-        await edge_tts.Communicate(text, voice).save(path)
+        boundaries.clear()
+        communicate = edge_tts.Communicate(text, voice, rate="+12%", boundary="WordBoundary")
+        with open(path, "wb") as audio_file:
+            async for chunk in communicate.stream():
+                if chunk["type"] == "audio":
+                    audio_file.write(chunk["data"])
+                elif chunk["type"] == "WordBoundary":
+                    boundaries.append({
+                        "offset": int(chunk["offset"]),
+                        "duration": int(chunk["duration"]),
+                        "text": chunk["text"],
+                    })
 
-    await _with_retries_async(_save)
-    return path
-
-
-def play_audio_file(path: str) -> None:
-    """Blocking playback — always run via run.io_bound(). Requires ffmpeg on PATH
-    (for decoding) and simpleaudio or ffplay (for playback) — see run instructions."""
     try:
-        segment = AudioSegment.from_file(path)
-        pydub_play(segment)
-    finally:
+        await _with_retries_async(_save)
+        return path, boundaries
+    except Exception:
         try:
             os.remove(path)
         except OSError:
             pass
+        raise
+
+
+def load_audio_file(path: str):
+    """Decode before starting the avatar clock, so animation starts with playback."""
+    return AudioSegment.from_file(path)
+
+
+def play_audio_segment(segment) -> None:
+    """Blocking local playback — always run via run.io_bound()."""
+    pydub_play(segment)
+
+
+def remove_audio_file(path: str) -> None:
+    try:
+        os.remove(path)
+    except OSError:
+        pass
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -742,6 +765,7 @@ body {
 }
 .chat-bubble-user { align-self: flex-end; background: var(--accent-gold); color: #1a1508; border-bottom-right-radius: 4px; }
 .chat-bubble-assistant { align-self: flex-start; background: rgba(255,255,255,0.07); border: 1px solid var(--panel-border); border-bottom-left-radius: 4px; }
+.chat-bubble .spoken-word-active { color: #17130a; background: var(--accent-gold); border-radius: 4px; box-shadow: 0 0 10px rgba(227,179,65,0.25); }
 
 .chat-input-row { gap: 8px; align-items: center; margin-top: 12px; }
 .chat-input { flex: 1; }
@@ -884,6 +908,63 @@ window.setStatus = function(text) {
     el.classList.add('status-pulse');
     setTimeout(function () { el.classList.remove('status-pulse'); }, 400);
   }
+};
+
+/* Word-level speech clock. Audio is played locally; these marks keep the
+   visible words and avatar aligned to the actual audio timeline. */
+window.startSpeechSync = function(boundaries, bubbleId) {
+  var bubble = document.getElementById(bubbleId);
+  window.setAvatarState('talking');
+  window.setStatus('🟣 Speaking');
+  if (!bubble || !boundaries || !boundaries.length) return;
+  var raw = bubble.textContent || '';
+  var cursor = 0;
+  var html = '';
+  var marks = [];
+  function esc(value) {
+    return String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;').replace(/\"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+  boundaries.forEach(function (b, i) {
+    var word = b.text || '';
+    var at = word ? raw.indexOf(word, cursor) : -1;
+    if (at < 0) return;
+    html += esc(raw.slice(cursor, at));
+    html += '<span class="spoken-word" data-word-index="' + i + '">' + esc(word) + '</span>';
+    marks.push({offset: Number(b.offset) / 10000000, index: i});
+    cursor = at + word.length;
+  });
+  html += esc(raw.slice(cursor));
+  if (marks.length) bubble.innerHTML = html;
+  var spans = bubble.querySelectorAll('.spoken-word');
+  var start = performance.now();
+  var last = -1;
+  function tick(now) {
+    var elapsed = (now - start) / 1000;
+    var current = -1;
+    for (var j = 0; j < marks.length; j++) {
+      if (marks[j].offset <= elapsed) current = marks[j].index;
+      else break;
+    }
+    if (current !== last) {
+      spans.forEach(function (span) {
+        span.classList.toggle('spoken-word-active', Number(span.dataset.wordIndex) === current);
+      });
+      last = current;
+    }
+    if (window.sovereignSpeechActive) window.sovereignSpeechFrame = requestAnimationFrame(tick);
+  }
+  window.sovereignSpeechActive = true;
+  window.sovereignSpeechFrame = requestAnimationFrame(tick);
+};
+window.finishSpeechSync = function() {
+  window.sovereignSpeechActive = false;
+  if (window.sovereignSpeechFrame) cancelAnimationFrame(window.sovereignSpeechFrame);
+  document.querySelectorAll('.spoken-word-active').forEach(function (el) {
+    el.classList.remove('spoken-word-active');
+  });
+  window.setAvatarState('idle');
+  window.setStatus('🟢 Online');
 };
 
 window.showToast = function(message, kind) {
@@ -1047,8 +1128,10 @@ def main_page():
             chat_log = ui.column().classes("chat-log w-full")
 
             def add_bubble(role: str, text: str):
+                bubble_id = f"sovereign-{role}-{time.time_ns()}"
                 with chat_log:  # explicit slot per NiceGUI's own recommended pattern
-                    ui.label(text).classes(f"chat-bubble chat-bubble-{role}")
+                    ui.label(text).classes(f"chat-bubble chat-bubble-{role}").props(f"id={bubble_id}")
+                return bubble_id
 
             for _msg in state["history"]:
                 add_bubble("user" if isinstance(_msg, HumanMessage) else "assistant", _msg.content)
@@ -1189,16 +1272,26 @@ def main_page():
         save_chat_history([])
         toast("Chat history cleared.", "info")
 
-    async def speak_safe(text: str):
+    async def speak_safe(text: str, bubble_id: str):
+        path = None
         try:
-            set_status("talking", "🟣 Speaking")
-            path = await synthesize_speech(text)
-            await run.io_bound(play_audio_file, path)
+            set_status("thinking", "🟡 Preparing voice")
+            path, boundaries = await synthesize_speech(text)
+            segment = await run.io_bound(load_audio_file, path)
+            # Start the UI clock only after synthesis and decoding are complete.
+            client.run_javascript(
+                "window.startSpeechSync(" + json.dumps(boundaries) + ", " + json.dumps(bubble_id) + ");"
+            )
+            await run.io_bound(play_audio_segment, segment)
+            client.run_javascript("window.finishSpeechSync();")
             set_status("happy", "🟢 Online")
-            ui.timer(1.5, revert_to_idle, once=True)
+            ui.timer(1.2, revert_to_idle, once=True)
         except Exception as exc:  # noqa: BLE001
             toast(f"Voice playback unavailable: {exc}", "warning")
             revert_to_idle()
+        finally:
+            if path:
+                await run.io_bound(remove_audio_file, path)
 
     async def send_message(text: str = None):
         text = text if text is not None else message_input.value
@@ -1213,11 +1306,11 @@ def main_page():
             state["history"].append(AIMessage(content=reply))
             state["history"][:] = state["history"][-20:]
             save_chat_history(state["history"])
-            add_bubble("assistant", reply)
+            assistant_bubble_id = add_bubble("assistant", reply)
             refresh_files_list()  # picks up anything save_file/convert_file just wrote
             revert_to_idle()
             if state["auto_speak"]:
-                await speak_safe(reply)
+                await speak_safe(reply, assistant_bubble_id)
         except Exception as exc:  # noqa: BLE001
             toast(f"Something went wrong: {exc}", "error")
             revert_to_idle()
