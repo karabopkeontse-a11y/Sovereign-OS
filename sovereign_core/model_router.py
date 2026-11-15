@@ -15,10 +15,12 @@ class ModelInfo:
     provider: str
     model: str
     runtime: str  # "cloud" or "local"
+    fallback: bool = False
 
     @property
     def label(self) -> str:
-        return f"{self.runtime.title()} · {self.provider} · {self.model}"
+        suffix = " · fallback after quota" if self.fallback else ""
+        return f"{self.runtime.title()} · {self.provider} · {self.model}{suffix}"
 
 
 @dataclass(frozen=True)
