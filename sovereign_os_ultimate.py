@@ -560,6 +560,9 @@ def call_llm(persona_key: str, history: list, user_text: str) -> str:
             f"- {item.content} (source: {item.source}; confidence: {item.confidence:.2f}; verified: {item.verified})"
             for item in recalled
         )
+        # Bound prompt growth: memory retrieval is local, but injected context still
+        # counts toward the normal model prompt budget.
+        memory_context = memory_context[:2000]
     except Exception:
         memory_context = ""
     persona_prompt = (
