@@ -150,6 +150,21 @@ def create_app(db_path=None, router=None, token=None):
             return {"conversations": [dict(row) for row in rows]}
         finally:
             db.close()
+    @app.get("/api/v1/workspaces/{workspace_id}/conversations/{conversation_id}/messages", dependencies=[Depends(authorize)])
+    def conversation_messages(workspace_id: str, conversation_id: str):
+        try:
+            state.workspaces.get_workspace(workspace_id)
+        except ValueError:
+            raise HTTPException(404, "Workspace not found")
+        db = state.connection()
+        try:
+            owner = db.execute("SELECT id FROM api_conversations WHERE id=? AND workspace_id=?", (conversation_id, workspace_id)).fetchone()
+            if owner is None:
+                raise HTTPException(404, "Conversation not found in this workspace")
+            rows = db.execute("SELECT role, content, provider, model, created_at FROM api_messages WHERE conversation_id=? ORDER BY created_at, id", (conversation_id,)).fetchall()
+            return {"messages": [dict(row) for row in rows]}
+        finally:
+            db.close()
     @app.post("/api/v1/workspaces/{workspace_id}/chat", dependencies=[Depends(authorize)])
     def chat(workspace_id: str, payload: ChatInput):
         return state.chat(workspace_id, payload)
