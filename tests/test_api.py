@@ -79,6 +79,14 @@ class SovereignAPITests(unittest.TestCase):
         data=self.client.get("/api/v1/iot/devices",headers=self.headers).json()
         self.assertTrue(data["simulation"])
         self.assertTrue(all(x["status"]=="simulation" for x in data["devices"]))
+    def test_iot_telemetry_endpoint_is_simulation_only(self):
+        result=self.client.get("/api/v1/iot/devices/demo-water-01/telemetry",headers=self.headers)
+        self.assertEqual(result.status_code,200)
+        self.assertTrue(result.json()["simulation"])
+        self.assertEqual(result.json()["unit"],"%")
+    def test_unknown_iot_device_telemetry_is_404(self):
+        result=self.client.get("/api/v1/iot/devices/unknown/telemetry",headers=self.headers)
+        self.assertEqual(result.status_code,404)
     def test_physical_device_commands_blocked(self):
         result=self.client.post("/api/v1/iot/commands",headers=self.headers,
                                 json={"command":"open_valve"})
