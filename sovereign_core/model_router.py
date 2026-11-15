@@ -75,6 +75,7 @@ class ModelRouter:
         self.max_tokens = int(max_tokens)
         self.temperature = float(temperature)
         self.checkout_url = self.env.get("SOVEREIGN_PREMIUM_URL", "").strip()
+        self.configuration_warnings: list[str] = []
         self.candidates = self._build_candidates()
 
     def _build_candidates(self) -> list[ModelCandidate]:
@@ -109,7 +110,9 @@ class ModelRouter:
                         ModelInfo("Groq", model, "cloud"), client
                     ))
             except ImportError:
-                pass
+                self.configuration_warnings.append(
+                    "Groq client dependency is missing; install langchain-groq."
+                )
 
         openrouter_key = self.env.get("OPENROUTER_API_KEY", "").strip()
         if openrouter_key:
@@ -126,7 +129,10 @@ class ModelRouter:
                     ),
                 ))
             except ImportError:
-                pass
+                self.configuration_warnings.append(
+                    "OpenRouter/Ollama requires langchain-openai; install it with "
+                    "'py -3.11 -m pip install langchain-openai'."
+                )
 
         ollama_model = self.env.get("OLLAMA_MODEL", "").strip()
         if ollama_model:
@@ -142,7 +148,9 @@ class ModelRouter:
                     ),
                 ))
             except ImportError:
-                pass
+                warning = "Ollama requires langchain-openai; install it with 'py -3.11 -m pip install langchain-openai'."
+                if warning not in self.configuration_warnings:
+                    self.configuration_warnings.append(warning)
 
         order = [part.strip().casefold() for part in self.env.get(
             "SOVEREIGN_MODEL_ORDER", "groq,openrouter,ollama"
@@ -158,7 +166,9 @@ class ModelRouter:
         if not self.candidates:
             raise ModelRoutingError(
                 "No model provider is configured. Add a Groq key, an OpenRouter key "
-                "for free models, or configure an existing local Ollama model.",
+                "for free models, or configure an existing local Ollama model. "
+                + (" Setup: " + " ".join(self.configuration_warnings)
+                   if self.configuration_warnings else ""),
                 checkout_url=self.checkout_url,
             )
         for index in range(max(0, start_index), len(self.candidates)):
