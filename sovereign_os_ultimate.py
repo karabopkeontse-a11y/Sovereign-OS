@@ -444,6 +444,37 @@ def search_memories(query: str, verified_only: bool = False) -> str:
 
 
 @tool
+def correct_memory(memory_id: str, corrected_content: str, confidence: float = 1.0) -> str:
+    """Replace an outdated saved memory with a corrected successor only when the user explicitly asks to correct or update it."""
+    try:
+        item = MEMORY_STORE.supersede(
+            memory_id, corrected_content,
+            source="explicit user correction request",
+            confidence=confidence,
+            verified=False,
+        )
+        return f"Corrected memory saved as {item.id}; previous memory {memory_id} is retained as superseded."
+    except Exception as exc:
+        return f"Memory correction failed: {type(exc).__name__}: {exc}"
+
+
+@tool
+def memory_revision_history(memory_id: str) -> str:
+    """Show the saved revision history for a memory ID when the user asks how a memory changed."""
+    try:
+        revisions = MEMORY_STORE.history(memory_id)
+        if not revisions:
+            return "No revision history found for that memory."
+        return "\n".join(
+            f"- revision {item.revision} at {item.changed_at}: {item.content} "
+            f"(source={item.source}; confidence={item.confidence:.2f}; verified={item.verified}; status={item.status})"
+            for item in revisions
+        )
+    except Exception as exc:
+        return f"Memory history failed: {type(exc).__name__}: {exc}"
+
+
+@tool
 def forget_memory(memory_id: str) -> str:
     """Permanently delete one saved memory and its revision history when the user explicitly asks to forget/delete it."""
     try:
@@ -467,7 +498,7 @@ def list_saved_memories() -> str:
         return f"Memory listing failed: {type(exc).__name__}: {exc}"
 
 
-TOOLS += [remember_fact, search_memories, forget_memory, list_saved_memories]
+TOOLS += [remember_fact, search_memories, correct_memory, memory_revision_history, forget_memory, list_saved_memories]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -536,6 +567,8 @@ def call_llm(persona_key: str, history: list, user_text: str) -> str:
         + "\n\nSOVEREIGN MEMORY RULES: Use the supplied saved-memory context only when relevant. "
         "Do not claim a memory exists unless it appears in context or search_memories returns it. "
         "Only call remember_fact when the user explicitly asks you to remember/save something. "
+        "Only call correct_memory when the user explicitly asks to correct/update an existing saved memory; search first if its ID is unknown. "
+        "Use memory_revision_history when the user asks how a saved memory changed. "
         "Only call forget_memory when the user explicitly asks to forget/delete a saved memory. "
         "Use list_saved_memories when the user asks what is saved. "
         "A memory is not automatically verified merely because it was saved. "
