@@ -153,7 +153,14 @@ class ModelRouter:
             return
         client = self._openai_compatible(provider, key, model, base_url, runtime, headers)
         if client is not None:
-            groups[provider.casefold()].append(
+            provider_key = {
+                "openrouter free": "openrouter",
+                "cloudflare workers ai": "cloudflare",
+                "z.ai": "zai",
+                "nvidia nim": "nvidia",
+                "mistral api (paid opt-in)": "mistral",
+            }.get(provider.casefold(), provider.casefold())
+            groups[provider_key].append(
                 ModelCandidate(ModelInfo(provider, model, runtime), client)
             )
 
