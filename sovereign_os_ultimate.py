@@ -82,6 +82,8 @@ from langchain_groq import ChatGroq
 from langchain_core.tools import tool
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage
 
+from sovereign_core.memory import MemoryStore
+
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
@@ -115,6 +117,8 @@ DEFAULT_VOICE = "en-US-AriaNeural"
 
 WORKSPACE_DIR = BASE_DIR / "sovereign_workspace"
 WORKSPACE_DIR.mkdir(exist_ok=True)
+MEMORY_STORE = MemoryStore(WORKSPACE_DIR / "sovereign_tasks.sqlite3")
+GENERAL_MEMORY_SCOPE = "general"
 app.add_static_files("/workspace-files", str(WORKSPACE_DIR))  # lets the modal show/download images & videos directly
 
 # Deliberately a small, named allow-list rather than an arbitrary path the model could
@@ -405,6 +409,67 @@ def convert_file(filename: str, target_format: str, location: str = "workspace")
 TOOLS += [list_files, read_file, convert_file]
 
 
+@tool
+def remember_fact(content: str, kind: str = "fact", confidence: float = 1.0) -> str:
+    """Save a durable fact, preference, decision or procedure only when the user explicitly asks Sovereign to remember or save it."""
+    try:
+        item = MEMORY_STORE.remember(
+            workspace_id=GENERAL_MEMORY_SCOPE,
+            content=content,
+            kind=kind,
+            source="explicit user memory request",
+            confidence=confidence,
+            verified=False,
+        )
+        return f"Saved memory {item.id} (revision {item.revision}, confidence {item.confidence:.2f})."
+    except Exception as exc:
+        return f"Memory save failed: {type(exc).__name__}: {exc}"
+
+
+@tool
+def search_memories(query: str, verified_only: bool = False) -> str:
+    """Search Sovereign's saved memories when the user asks what was previously decided, said, preferred or saved."""
+    try:
+        matches = MEMORY_STORE.search(
+            GENERAL_MEMORY_SCOPE, query, limit=10, verified_only=verified_only
+        )
+        if not matches:
+            return "No matching saved memories were found."
+        return "\n".join(
+            f"- [{item.id}] ({item.kind}; source={item.source}; confidence={item.confidence:.2f}; verified={item.verified}) {item.content}"
+            for item in matches
+        )
+    except Exception as exc:
+        return f"Memory search failed: {type(exc).__name__}: {exc}"
+
+
+@tool
+def forget_memory(memory_id: str) -> str:
+    """Permanently delete one saved memory and its revision history when the user explicitly asks to forget/delete it."""
+    try:
+        return "Memory and revision history permanently deleted." if MEMORY_STORE.delete(memory_id) else "No memory with that ID was found."
+    except Exception as exc:
+        return f"Memory deletion failed: {type(exc).__name__}: {exc}"
+
+
+@tool
+def list_saved_memories() -> str:
+    """List saved general-workspace memories so the user can review their IDs and request deletion."""
+    try:
+        items = MEMORY_STORE.list_memories(GENERAL_MEMORY_SCOPE)
+        if not items:
+            return "There are no saved memories."
+        return "\n".join(
+            f"- [{item.id}] ({item.kind}; confidence={item.confidence:.2f}; verified={item.verified}) {item.content}"
+            for item in items
+        )
+    except Exception as exc:
+        return f"Memory listing failed: {type(exc).__name__}: {exc}"
+
+
+TOOLS += [remember_fact, search_memories, forget_memory, list_saved_memories]
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # LLM — manual tool-calling loop
 # ─────────────────────────────────────────────────────────────────────────────
@@ -456,7 +521,27 @@ def call_llm(persona_key: str, history: list, user_text: str) -> str:
     if not GROQ_API_KEY:
         raise RuntimeError("No GROQ_API_KEY found in .env — add one and restart.")
 
-    persona_prompt = (PERSONAS.get(persona_key, PERSONAS[DEFAULT_PERSONA]) + "\n\nLIVE DATA RULES: For any question about current weather, temperature, or forecasts, call get_weather with the exact place the user specifies. Never substitute another town or country. For a known Botswana town named without a country, interpret it as Botswana. Preserve the returned location, timestamp, units, forecast dates, and source. Never invent weather values or claim model data is a station observation. For current events, recent facts, prices, or general web research, call web_search. Report tool errors honestly.")
+    # Retrieve relevant durable memories locally before making a model call.
+    # Ordinary conversation is never automatically written to memory.
+    try:
+        recalled = MEMORY_STORE.search(GENERAL_MEMORY_SCOPE, user_text, limit=5)
+        memory_context = "\\n".join(
+            f"- {item.content} (source: {item.source}; confidence: {item.confidence:.2f}; verified: {item.verified})"
+            for item in recalled
+        )
+    except Exception:
+        memory_context = ""
+    persona_prompt = (
+        PERSONAS.get(persona_key, PERSONAS[DEFAULT_PERSONA])
+        + "\\n\\nSOVEREIGN MEMORY RULES: Use the supplied saved-memory context only when relevant. "
+        "Do not claim a memory exists unless it appears in context or search_memories returns it. "
+        "Only call remember_fact when the user explicitly asks you to remember/save something. "
+        "Only call forget_memory when the user explicitly asks to forget/delete a saved memory. "
+        "Use list_saved_memories when the user asks what is saved. "
+        "A memory is not automatically verified merely because it was saved. "
+        "\\nSaved-memory context:\\n" + (memory_context or "(No keyword-matched memories.)")
+        + "\\n\\nLIVE DATA RULES: For any question about current weather, temperature, or forecasts, call get_weather with the exact place the user specifies. Never substitute another town or country. For a known Botswana town named without a country, interpret it as Botswana. Preserve the returned location, timestamp, units, forecast dates, and source. Never invent weather values or claim model data is a station observation. For current events, recent facts, prices, or general web research, call web_search. Report tool errors honestly."
+    )
     messages = [SystemMessage(content=persona_prompt)] + list(history) + [HumanMessage(content=user_text)]
 
     try:
