@@ -1233,6 +1233,7 @@ def main_page():
         stop_speech_button = ui.button("Stop speech", icon="stop", on_click=lambda: stop_speech()).props("outline color=negative")
         stop_speech_button.disable()
         ui.button(icon="delete_sweep", on_click=lambda: clear_chat()).props("flat").tooltip("Clear chat history")
+        ui.button("Memory", icon="psychology", on_click=lambda: open_memory_panel()).props("outline color=primary")
         ui.select(list(PERSONAS.keys()), value=state["persona"],
                   on_change=lambda e: state.update(persona=e.value)
                   ).classes("persona-select").props("dark outlined dense")
@@ -1281,6 +1282,16 @@ def main_page():
                 .classes("modal-format-select")
             ui.button("Download", icon="download", on_click=lambda: on_download())
             ui.button("Close", on_click=file_dialog.close).props("flat")
+
+    # Saved-memory manager: review, verify, export or permanently erase records.
+    with ui.dialog() as memory_dialog, ui.card().classes("glass-modal"):
+        ui.label("Sovereign Memory Vault").classes("modal-title")
+        ui.label("General workspace memories. Saving is explicit; verification is user-controlled.")
+        memory_panel_column = ui.column().classes("w-full")
+        with ui.row().classes("modal-actions w-full"):
+            ui.button("Export JSON", icon="download", on_click=lambda: export_memories())
+            ui.button("Refresh", icon="refresh", on_click=lambda: refresh_memory_panel())
+            ui.button("Close", on_click=memory_dialog.close).props("flat")
 
     def _open_media_lightbox(kind: str):
         url = current_file.get("url")
@@ -1344,6 +1355,71 @@ def main_page():
                 with ui.row().classes("file-row w-full").on("click", lambda f=f: open_file_modal(f)):
                     ui.icon("description").classes("file-icon")
                     ui.label(f.name).classes("file-name")
+
+    def refresh_memory_panel():
+        memory_panel_column.clear()
+        with memory_panel_column:
+            records = MEMORY_STORE.list_memories(GENERAL_MEMORY_SCOPE)
+            if not records:
+                ui.label("No saved memories yet. Ask Sovereign to remember something explicitly.")
+            for item in records:
+                with ui.column().classes("w-full glass-panel").style("padding: 10px; margin: 6px 0;"):
+                    ui.label(item.content).classes("text-weight-medium")
+                    ui.label(
+                        f"{item.kind} | source: {item.source} | confidence: {item.confidence:.2f} | "
+                        f"{'verified' if item.verified else 'unverified'} | revision {item.revision}"
+                    ).classes("files-empty")
+                    with ui.row().classes("w-full"):
+                        if not item.verified:
+                            ui.button(
+                                "Mark verified", icon="verified",
+                                on_click=lambda item_id=item.id: verify_saved_memory(item_id)
+                            ).props("dense outline color=positive")
+                        ui.button(
+                            "Delete permanently", icon="delete",
+                            on_click=lambda item_id=item.id: delete_saved_memory(item_id)
+                        ).props("dense outline color=negative")
+
+    def open_memory_panel():
+        refresh_memory_panel()
+        memory_dialog.open()
+
+    def verify_saved_memory(memory_id: str):
+        try:
+            item = MEMORY_STORE.get(memory_id)
+            if item is None:
+                toast("Memory no longer exists.", "warning")
+                return
+            MEMORY_STORE.revise(
+                item.id, item.content,
+                source="user verified in memory panel",
+                verified=True,
+            )
+            refresh_memory_panel()
+            toast("Memory marked as verified.", "success")
+        except Exception as exc:
+            toast(f"Could not verify memory: {exc}", "error")
+
+    def delete_saved_memory(memory_id: str):
+        try:
+            if MEMORY_STORE.delete(memory_id):
+                toast("Memory and revision history permanently deleted.", "success")
+            else:
+                toast("Memory no longer exists.", "warning")
+            refresh_memory_panel()
+        except Exception as exc:
+            toast(f"Could not delete memory: {exc}", "error")
+
+    def export_memories():
+        try:
+            payload = MEMORY_STORE.export_json(GENERAL_MEMORY_SCOPE)
+            fd, path = tempfile.mkstemp(prefix="sovereign-memory-", suffix=".json")
+            os.close(fd)
+            Path(path).write_text(payload, encoding="utf-8")
+            ui.download(path, filename="sovereign-memory-export.json")
+            toast("Memory export prepared.", "success")
+        except Exception as exc:
+            toast(f"Memory export failed: {exc}", "error")
 
     async def on_refine():
         path = current_file["path"]
