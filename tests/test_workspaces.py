@@ -54,6 +54,15 @@ class WorkspaceServiceTests(unittest.TestCase):
             self.service.forget(b.id, saved.id)
         self.assertIsNotNone(self.service.memory.get(saved.id))
 
+    def test_verify_is_workspace_scoped(self):
+        a = self.service.create_workspace("Alpha")
+        b = self.service.create_workspace("Beta")
+        saved = self.service.remember(a.id, "Confirm this detail")
+        verified = self.service.verify(a.id, saved.id)
+        self.assertTrue(verified.verified)
+        with self.assertRaises(ValueError):
+            self.service.verify(b.id, saved.id)
+
     def test_unknown_workspace_is_rejected(self):
         with self.assertRaises(ValueError):
             self.service.search("not-a-workspace", "anything")

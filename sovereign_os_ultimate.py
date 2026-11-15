@@ -78,11 +78,12 @@ from pydub.playback import play as pydub_play
 
 from nicegui import ui, run, app
 
-from langchain_groq import ChatGroq
 from langchain_core.tools import tool
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage
 
 from sovereign_core.memory import MemoryStore
+from sovereign_core.workspaces import WorkspaceService
+from sovereign_core.model_router import ModelRouter, ModelRoutingError, ModelInfo
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIG
@@ -96,7 +97,10 @@ BASE_DIR = Path(__file__).resolve().parent
 ENV_CANDIDATES = [BASE_DIR / ".env", BASE_DIR / "example.env", BASE_DIR / ".enc", BASE_DIR / ".env.txt", BASE_DIR / "example.env.txt", BASE_DIR / ".env.example"]
 ENV_FILE = next(
     (candidate for candidate in ENV_CANDIDATES
-     if candidate.is_file() and dotenv_values(candidate).get("GROQ_API_KEY")),
+     if candidate.is_file() and any(
+         dotenv_values(candidate).get(key)
+         for key in ("GROQ_API_KEY", "OPENROUTER_API_KEY", "OLLAMA_MODEL")
+     )),
     None,
 )
 if ENV_FILE is not None:
@@ -112,13 +116,18 @@ MODEL_NAME = os.getenv("GROQ_MODEL", "qwen/qwen3.8-27b").strip()
 # Automatically migrate the retired model ID if it remains in an existing .env file.
 if MODEL_NAME == "qwen/qwen3.6-27b":
     MODEL_NAME = "qwen/qwen3.8-27b"
-MAX_TOKENS = 800                   # keeps you under 429 rate limits, as you noted
+os.environ["GROQ_MODEL"] = MODEL_NAME
+MAX_TOKENS = int(os.getenv("SOVEREIGN_MAX_OUTPUT_TOKENS", "800"))
 DEFAULT_VOICE = "en-US-AriaNeural"
 
 WORKSPACE_DIR = BASE_DIR / "sovereign_workspace"
 WORKSPACE_DIR.mkdir(exist_ok=True)
-MEMORY_STORE = MemoryStore(WORKSPACE_DIR / "sovereign_tasks.sqlite3")
-GENERAL_MEMORY_SCOPE = "general"
+WORKSPACE_DB = WORKSPACE_DIR / "sovereign_tasks.sqlite3"
+WORKSPACE_SERVICE = WorkspaceService(WORKSPACE_DB)
+WORKSPACES = WORKSPACE_SERVICE.ensure_default_workspaces()
+MEMORY_STORE = WORKSPACE_SERVICE.memory  # retained for legacy vault operations
+CHAT_HISTORY_DIR = WORKSPACE_DIR / "chat_history"
+CHAT_HISTORY_DIR.mkdir(exist_ok=True)
 app.add_static_files("/workspace-files", str(WORKSPACE_DIR))  # lets the modal show/download images & videos directly
 
 # Deliberately a small, named allow-list rather than an arbitrary path the model could
@@ -409,96 +418,90 @@ def convert_file(filename: str, target_format: str, location: str = "workspace")
 TOOLS += [list_files, read_file, convert_file]
 
 
-@tool
-def remember_fact(content: str, kind: str = "fact", confidence: float = 1.0) -> str:
-    """Save a durable fact, preference, decision or procedure only when the user explicitly asks Sovereign to remember or save it."""
-    try:
-        item = MEMORY_STORE.remember(
-            workspace_id=GENERAL_MEMORY_SCOPE,
-            content=content,
-            kind=kind,
-            source="explicit user memory request",
-            confidence=confidence,
-            verified=False,
-        )
-        return f"Saved memory {item.id} (revision {item.revision}, confidence {item.confidence:.2f})."
-    except Exception as exc:
-        return f"Memory save failed: {type(exc).__name__}: {exc}"
+def build_workspace_memory_tools(workspace_id: str):
+    """Create memory tools whose workspace is captured by the desktop session.
+    The LLM never receives a workspace_id argument and cannot switch its scope."""
+    WORKSPACE_SERVICE.get_workspace(workspace_id)
 
+    @tool
+    def remember_fact(content: str, kind: str = "fact", confidence: float = 1.0) -> str:
+        """Save a durable fact only when the user explicitly asks Sovereign to remember it."""
+        try:
+            item = WORKSPACE_SERVICE.remember(
+                workspace_id, content, kind=kind, source="explicit user memory request",
+                confidence=confidence, verified=False,
+            )
+            return f"Saved memory {item.id} (revision {item.revision}, confidence {item.confidence:.2f})."
+        except Exception as exc:
+            return f"Memory save failed: {type(exc).__name__}: {exc}"
 
-@tool
-def search_memories(query: str, verified_only: bool = False) -> str:
-    """Search Sovereign's saved memories when the user asks what was previously decided, said, preferred or saved."""
-    try:
-        matches = MEMORY_STORE.search(
-            GENERAL_MEMORY_SCOPE, query, limit=10, verified_only=verified_only
-        )
-        if not matches:
-            return "No matching saved memories were found."
-        return "\n".join(
-            f"- [{item.id}] ({item.kind}; source={item.source}; confidence={item.confidence:.2f}; verified={item.verified}) {item.content}"
-            for item in matches
-        )
-    except Exception as exc:
-        return f"Memory search failed: {type(exc).__name__}: {exc}"
+    @tool
+    def search_memories(query: str, verified_only: bool = False) -> str:
+        """Search saved memories in the currently selected workspace."""
+        try:
+            matches = WORKSPACE_SERVICE.search(workspace_id, query, limit=10, verified_only=verified_only)
+            if not matches:
+                return "No matching saved memories were found in this workspace."
+            return "\n".join(
+                f"- [{item.id}] ({item.kind}; source={item.source}; confidence={item.confidence:.2f}; verified={item.verified}) {item.content}"
+                for item in matches
+            )
+        except Exception as exc:
+            return f"Memory search failed: {type(exc).__name__}: {exc}"
 
+    @tool
+    def correct_memory(memory_id: str, corrected_content: str, confidence: float = 1.0) -> str:
+        """Correct an existing memory in the selected workspace only, after explicit user instruction."""
+        try:
+            item = WORKSPACE_SERVICE.correct(
+                workspace_id, memory_id, corrected_content,
+                source="explicit user correction request", confidence=confidence,
+            )
+            return f"Corrected memory saved as {item.id}; previous memory {memory_id} is retained as superseded."
+        except Exception as exc:
+            return f"Memory correction failed: {type(exc).__name__}: {exc}"
 
-@tool
-def correct_memory(memory_id: str, corrected_content: str, confidence: float = 1.0) -> str:
-    """Replace an outdated saved memory with a corrected successor only when the user explicitly asks to correct or update it."""
-    try:
-        item = MEMORY_STORE.supersede(
-            memory_id, corrected_content,
-            source="explicit user correction request",
-            confidence=confidence,
-            verified=False,
-        )
-        return f"Corrected memory saved as {item.id}; previous memory {memory_id} is retained as superseded."
-    except Exception as exc:
-        return f"Memory correction failed: {type(exc).__name__}: {exc}"
+    @tool
+    def memory_revision_history(memory_id: str) -> str:
+        """Show revision history for a memory in the selected workspace."""
+        try:
+            revisions = WORKSPACE_SERVICE.history(workspace_id, memory_id)
+            if not revisions:
+                return "No revision history found for that memory."
+            return "\n".join(
+                f"- revision {item.revision} at {item.changed_at}: {item.content} "
+                f"(source={item.source}; confidence={item.confidence:.2f}; verified={item.verified}; status={item.status})"
+                for item in revisions
+            )
+        except Exception as exc:
+            return f"Memory history failed: {type(exc).__name__}: {exc}"
 
+    @tool
+    def forget_memory(memory_id: str) -> str:
+        """Permanently delete a saved memory in the selected workspace after explicit user instruction."""
+        try:
+            return ("Memory and revision history permanently deleted."
+                    if WORKSPACE_SERVICE.forget(workspace_id, memory_id)
+                    else "No memory with that ID was found in this workspace.")
+        except Exception as exc:
+            return f"Memory deletion failed: {type(exc).__name__}: {exc}"
 
-@tool
-def memory_revision_history(memory_id: str) -> str:
-    """Show the saved revision history for a memory ID when the user asks how a memory changed."""
-    try:
-        revisions = MEMORY_STORE.history(memory_id)
-        if not revisions:
-            return "No revision history found for that memory."
-        return "\n".join(
-            f"- revision {item.revision} at {item.changed_at}: {item.content} "
-            f"(source={item.source}; confidence={item.confidence:.2f}; verified={item.verified}; status={item.status})"
-            for item in revisions
-        )
-    except Exception as exc:
-        return f"Memory history failed: {type(exc).__name__}: {exc}"
+    @tool
+    def list_saved_memories() -> str:
+        """List saved memories in the selected workspace for review."""
+        try:
+            items = WORKSPACE_SERVICE.list_memories(workspace_id)
+            if not items:
+                return "There are no saved memories in this workspace."
+            return "\n".join(
+                f"- [{item.id}] ({item.kind}; confidence={item.confidence:.2f}; verified={item.verified}) {item.content}"
+                for item in items
+            )
+        except Exception as exc:
+            return f"Memory listing failed: {type(exc).__name__}: {exc}"
 
-
-@tool
-def forget_memory(memory_id: str) -> str:
-    """Permanently delete one saved memory and its revision history when the user explicitly asks to forget/delete it."""
-    try:
-        return "Memory and revision history permanently deleted." if MEMORY_STORE.delete(memory_id) else "No memory with that ID was found."
-    except Exception as exc:
-        return f"Memory deletion failed: {type(exc).__name__}: {exc}"
-
-
-@tool
-def list_saved_memories() -> str:
-    """List saved general-workspace memories so the user can review their IDs and request deletion."""
-    try:
-        items = MEMORY_STORE.list_memories(GENERAL_MEMORY_SCOPE)
-        if not items:
-            return "There are no saved memories."
-        return "\n".join(
-            f"- [{item.id}] ({item.kind}; confidence={item.confidence:.2f}; verified={item.verified}) {item.content}"
-            for item in items
-        )
-    except Exception as exc:
-        return f"Memory listing failed: {type(exc).__name__}: {exc}"
-
-
-TOOLS += [remember_fact, search_memories, correct_memory, memory_revision_history, forget_memory, list_saved_memories]
+    return [remember_fact, search_memories, correct_memory,
+            memory_revision_history, forget_memory, list_saved_memories]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -511,93 +514,89 @@ TOOLS += [remember_fact, search_memories, correct_memory, memory_revision_histor
 # lower-level primitive underneath all of those helpers and isn't subject to that
 # churn, so the loop below is built directly on it instead.
 
-def _build_llm() -> ChatGroq:
-    if not GROQ_API_KEY:
-        searched = ", ".join(p.name for p in ENV_CANDIDATES)
-        raise RuntimeError(
-            "Groq API key not found. Put GROQ_API_KEY=gsk_... in a file named "
-            f".env beside this Python file. Also checked: {searched}. "
-            "Do not include quotes around the key, and do not share it publicly."
-        )
-    # reasoning_effort="none" disables extended reasoning for the Qwen 3.8 family,
-    # keeping short conversational replies responsive.
-    # reasoning_format="hidden" is a belt-and-suspenders complement for if you ever
-    # swap MODEL_NAME to something that can't fully disable reasoning.
-    # NOTE: if you change MODEL_NAME later, double check that model's valid
-    # reasoning_effort values on https://console.groq.com/docs/reasoning — they differ
-    # per model, and "none" specifically is only valid for the Qwen 3.6/3.8 family.
-    base = dict(api_key=GROQ_API_KEY, max_tokens=MAX_TOKENS, temperature=0.7)
-    fast = dict(reasoning_effort="none", reasoning_format="hidden")
-    for kwargs in (
-        dict(model=MODEL_NAME, **fast, **base),
-        dict(model_name=MODEL_NAME, **fast, **base),
-        dict(model=MODEL_NAME, **base),
-        dict(model_name=MODEL_NAME, **base),
-    ):
-        try:
-            return ChatGroq(**kwargs)
-        except TypeError:
-            continue
-    raise RuntimeError("Could not construct ChatGroq with any known parameter combination.")
-
-
-llm = _build_llm()
-llm_with_tools = llm.bind_tools(TOOLS)
-TOOL_MAP = {t.name: t for t in TOOLS}
+MODEL_ROUTER = ModelRouter(max_tokens=MAX_TOKENS, temperature=0.7)
 MAX_TOOL_HOPS = 4
 
 
-def call_llm(persona_key: str, history: list, user_text: str) -> str:
-    """Blocking call — always run this via run.io_bound() from the UI layer."""
-    if not GROQ_API_KEY:
-        raise RuntimeError("No GROQ_API_KEY found in .env — add one and restart.")
+def _bounded_history(history: list) -> list:
+    """Keep recent conversation within a small prompt budget before provider calls."""
+    max_chars = max(2000, int(os.getenv("SOVEREIGN_CONTEXT_CHARS", "10000")))
+    max_messages = max(2, int(os.getenv("SOVEREIGN_HISTORY_MESSAGES", "10")))
+    selected = []
+    used = 0
+    for message in reversed(history[-max_messages:]):
+        content = str(getattr(message, "content", ""))[:max_chars]
+        if selected and used + len(content) > max_chars:
+            break
+        if len(content) > max_chars:
+            content = content[-max_chars:]
+        selected.append(type(message)(content=content))
+        used += len(content)
+    return list(reversed(selected))
 
-    # Retrieve relevant durable memories locally before making a model call.
-    # Ordinary conversation is never automatically written to memory.
+
+def call_llm(persona_key: str, history: list, user_text: str,
+             workspace_id: str) -> tuple[str, object]:
+    """Run a workspace-bound agent turn with quota-aware model failover."""
+    workspace = WORKSPACE_SERVICE.get_workspace(workspace_id)
     try:
-        recalled = MEMORY_STORE.search(GENERAL_MEMORY_SCOPE, user_text, limit=5)
+        recalled = WORKSPACE_SERVICE.search(workspace_id, user_text, limit=5)
         memory_context = "\n".join(
             f"- {item.content} (source: {item.source}; confidence: {item.confidence:.2f}; verified: {item.verified})"
             for item in recalled
-        )
-        # Bound prompt growth: memory retrieval is local, but injected context still
-        # counts toward the normal model prompt budget.
-        memory_context = memory_context[:2000]
+        )[:1500]
     except Exception:
         memory_context = ""
+
     persona_prompt = (
         PERSONAS.get(persona_key, PERSONAS[DEFAULT_PERSONA])
-        + "\n\nSOVEREIGN MEMORY RULES: Use the supplied saved-memory context only when relevant. "
-        "Do not claim a memory exists unless it appears in context or search_memories returns it. "
-        "Only call remember_fact when the user explicitly asks you to remember/save something. "
-        "Only call correct_memory when the user explicitly asks to correct/update an existing saved memory; search first if its ID is unknown. "
-        "Use memory_revision_history when the user asks how a saved memory changed. "
-        "Only call forget_memory when the user explicitly asks to forget/delete a saved memory. "
-        "Use list_saved_memories when the user asks what is saved. "
-        "A memory is not automatically verified merely because it was saved. "
+        + f"\n\nACTIVE WORKSPACE: {workspace.name}. All memory tools are already bound to this workspace. "
+        "Never request or invent a workspace ID and never attempt to access another workspace. "
+        "Use the supplied saved-memory context only when relevant. Do not claim a memory exists "
+        "unless it appears in context or search_memories returns it. Only save, correct or delete "
+        "memories when the user explicitly asks. Use memory_revision_history when asked how a "
+        "saved memory changed. A saved memory is not automatically verified. "
         "\nSaved-memory context:\n" + (memory_context or "(No keyword-matched memories.)")
-        + "\n\nLIVE DATA RULES: For any question about current weather, temperature, or forecasts, call get_weather with the exact place the user specifies. Never substitute another town or country. For a known Botswana town named without a country, interpret it as Botswana. Preserve the returned location, timestamp, units, forecast dates, and source. Never invent weather values or claim model data is a station observation. For current events, recent facts, prices, or general web research, call web_search. Report tool errors honestly."
+        + "\n\nLIVE DATA RULES: For current weather, call get_weather with the exact place the user specifies. "
+        "Never substitute another town or country. For a known Botswana town named without a country, "
+        "interpret it as Botswana. Preserve returned location, timestamp, units, forecast dates and source. "
+        "Never invent weather values or claim model data is a station observation. For current events, "
+        "recent facts, prices or general web research, call web_search. Report tool errors honestly."
     )
-    messages = [SystemMessage(content=persona_prompt)] + list(history) + [HumanMessage(content=user_text)]
+    messages = [SystemMessage(content=persona_prompt)] + _bounded_history(history) + [HumanMessage(content=user_text)]
+    active_tools = TOOLS + build_workspace_memory_tools(workspace_id)
+    tool_map = {item.name: item for item in active_tools}
+    active_index = 0
+    active_info = None
+    fallback_used = False
 
-    try:
-        for _ in range(MAX_TOOL_HOPS):
-            ai_message = _with_retries(llm_with_tools.invoke, messages)
-            messages.append(ai_message)
-            calls = getattr(ai_message, "tool_calls", None)
-            if not calls:
-                return ai_message.content
-            for call in calls:
-                tool_fn = TOOL_MAP.get(call["name"])
-                try:
-                    result = tool_fn.invoke(call["args"]) if tool_fn else f"Unknown tool: {call['name']}"
-                except Exception as exc:  # noqa: BLE001 - a bad tool call must never crash the chat
-                    result = f"Tool error: {exc}"
-                messages.append(ToolMessage(content=str(result), tool_call_id=call["id"]))
-        return _with_retries(llm.invoke, messages).content  # hit the hop limit — force a final, tool-free answer
-    except Exception as exc:  # noqa: BLE001 - surface failures; never fabricate a live-data answer
-        return (f"Sovereign encountered an error while processing this request: "
-                f"{type(exc).__name__}: {exc}. No unverified live-data answer was generated.")
+    def reported_model():
+        if active_info is None:
+            return None
+        return ModelInfo(active_info.provider, active_info.model, active_info.runtime, fallback_used)
+
+    for _ in range(MAX_TOOL_HOPS):
+        ai_message, active_info, active_index = MODEL_ROUTER.invoke(
+            messages, tools=active_tools, start_index=active_index
+        )
+        fallback_used = fallback_used or active_index > 0
+        messages.append(ai_message)
+        calls = getattr(ai_message, "tool_calls", None)
+        if not calls:
+            return ai_message.content, reported_model()
+        for call in calls:
+            tool_fn = tool_map.get(call["name"])
+            try:
+                result = tool_fn.invoke(call["args"]) if tool_fn else f"Unknown tool: {call['name']}"
+            except Exception as exc:  # noqa: BLE001
+                result = f"Tool error: {type(exc).__name__}: {exc}"
+            messages.append(ToolMessage(content=str(result)[:5000], tool_call_id=call["id"]))
+
+    final_message, active_info, final_index = MODEL_ROUTER.invoke(
+        messages, tools=None, start_index=active_index
+    )
+    fallback_used = fallback_used or final_index > 0
+    return final_message.content, reported_model()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -747,27 +746,45 @@ def list_recent_files(limit: int = 15):
     return files[:limit]
 
 
-def load_chat_history() -> list:
-    if not CHAT_HISTORY_FILE.exists():
+def _chat_history_path(workspace_id: str | None = None) -> Path:
+    if not workspace_id:
+        return CHAT_HISTORY_FILE
+    safe_id = re.sub(r"[^a-zA-Z0-9_-]", "_", workspace_id)
+    return CHAT_HISTORY_DIR / f"{safe_id}.json"
+
+
+def load_chat_history(workspace_id: str | None = None) -> list:
+    path = _chat_history_path(workspace_id)
+    # Preserve the previous single-history file as General's first-run history.
+    if not path.exists() and workspace_id:
+        try:
+            selected = WORKSPACE_SERVICE.get_workspace(workspace_id)
+            if selected.name == "General" and CHAT_HISTORY_FILE.exists():
+                path = CHAT_HISTORY_FILE
+        except Exception:
+            pass
+    if not path.exists():
         return []
     try:
-        raw = json.loads(CHAT_HISTORY_FILE.read_text(encoding="utf-8"))
+        raw = json.loads(path.read_text(encoding="utf-8"))
         return [
             HumanMessage(content=item["content"]) if item.get("role") == "user" else AIMessage(content=item["content"])
             for item in raw
         ]
-    except Exception:  # noqa: BLE001 - a corrupt history file should never block startup
+    except Exception:  # noqa: BLE001
         return []
 
 
-def save_chat_history(history: list) -> None:
+def save_chat_history(history: list, workspace_id: str | None = None) -> None:
     try:
         serializable = [
             {"role": "user" if isinstance(m, HumanMessage) else "assistant", "content": m.content}
             for m in history
         ]
-        CHAT_HISTORY_FILE.write_text(json.dumps(serializable, ensure_ascii=False, indent=2), encoding="utf-8")
-    except Exception:  # noqa: BLE001 - persistence is a nice-to-have, never crash the chat over it
+        _chat_history_path(workspace_id).write_text(
+            json.dumps(serializable, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    except Exception:  # noqa: BLE001
         pass
 
 
@@ -1230,7 +1247,13 @@ ui.add_head_html(HEAD_HTML, shared=True)
 @ui.page("/")
 def main_page():
     client = ui.context.client
-    state = {"persona": DEFAULT_PERSONA, "history": load_chat_history(), "auto_speak": False}
+    default_workspace = next((w for w in WORKSPACES if w.name == "SovereignOS"), WORKSPACES[0])
+    state = {
+        "persona": DEFAULT_PERSONA,
+        "workspace_id": default_workspace.id,
+        "history": load_chat_history(default_workspace.id),
+        "auto_speak": False,
+    }
     current_file = {"path": None, "kind": "text"}
     recording_state = {"active": False, "stop": False}
     speech_state = {"stop_event": None, "cache": {}, "last": None}
@@ -1260,6 +1283,8 @@ def main_page():
     with ui.row().classes("app-header w-full"):
         ui.html('<span class="app-title">SOVEREIGN <span class="app-title-accent">OS</span></span>')
         ui.html('<span id="status-indicator" class="status-indicator">🟢 Online</span>')
+        initial_model = MODEL_ROUTER.candidates[0].info.label if MODEL_ROUTER.candidates else "No provider configured"
+        model_indicator = ui.label(f"Ready: {initial_model}").classes("files-empty")
         ui.space()
         ui.switch("Speak replies", value=False,
                   on_change=lambda e: state.update(auto_speak=e.value)
@@ -1270,6 +1295,11 @@ def main_page():
         stop_speech_button.disable()
         ui.button(icon="delete_sweep", on_click=lambda: clear_chat()).props("flat").tooltip("Clear chat history")
         ui.button("Memory", icon="psychology", on_click=lambda: open_memory_panel()).props("outline color=primary")
+        workspace_select = ui.select(
+            {w.name: w.id for w in WORKSPACES},
+            value=state["workspace_id"],
+            on_change=lambda e: switch_workspace(e.value),
+        ).classes("workspace-select").props("dark outlined dense")
         ui.select(list(PERSONAS.keys()), value=state["persona"],
                   on_change=lambda e: state.update(persona=e.value)
                   ).classes("persona-select").props("dark outlined dense")
@@ -1285,6 +1315,19 @@ def main_page():
                 with chat_log:  # explicit slot per NiceGUI's own recommended pattern
                     ui.label(text).classes(f"chat-bubble chat-bubble-{role}").props(f"id={bubble_id}")
                 return bubble_id
+
+            def switch_workspace(workspace_id: str):
+                try:
+                    selected = WORKSPACE_SERVICE.get_workspace(workspace_id)
+                    state["workspace_id"] = selected.id
+                    state["history"] = load_chat_history(selected.id)
+                    chat_log.clear()
+                    for msg in state["history"]:
+                        add_bubble("user" if isinstance(msg, HumanMessage) else "assistant", msg.content)
+                    toast(f"Switched to {selected.name}. Memory and chat history are isolated.", "success")
+                    refresh_memory_panel()
+                except Exception as exc:
+                    toast(f"Workspace switch failed: {exc}", "error")
 
             for _msg in state["history"]:
                 add_bubble("user" if isinstance(_msg, HumanMessage) else "assistant", _msg.content)
@@ -1319,15 +1362,24 @@ def main_page():
             ui.button("Download", icon="download", on_click=lambda: on_download())
             ui.button("Close", on_click=file_dialog.close).props("flat")
 
-    # Saved-memory manager: review, verify, export or permanently erase records.
+    # Workspace memory manager: every operation uses the selected workspace scope.
     with ui.dialog() as memory_dialog, ui.card().classes("glass-modal"):
         ui.label("Sovereign Memory Vault").classes("modal-title")
-        ui.label("General workspace memories. Saving is explicit; verification is user-controlled.")
+        memory_scope_label = ui.label(f"Workspace: {default_workspace.name}")
+        ui.label("Saving is explicit. Verify, export or permanently erase this workspace's records.")
         memory_panel_column = ui.column().classes("w-full")
         with ui.row().classes("modal-actions w-full"):
             ui.button("Export JSON", icon="download", on_click=lambda: export_memories())
             ui.button("Refresh", icon="refresh", on_click=lambda: refresh_memory_panel())
             ui.button("Close", on_click=memory_dialog.close).props("flat")
+
+    with ui.dialog() as premium_dialog, ui.card().classes("glass-modal"):
+        ui.label("Free model capacity unavailable").classes("modal-title")
+        ui.label("Sovereign tried the configured free/local models. No paid model was called.")
+        ui.label("Premium access is not yet activated for this installation.")
+        if os.getenv("SOVEREIGN_PREMIUM_URL", "").strip():
+            ui.link("View Sovereign premium options", os.getenv("SOVEREIGN_PREMIUM_URL", "").strip())
+        ui.button("Close", on_click=premium_dialog.close).props("flat")
 
     def _open_media_lightbox(kind: str):
         url = current_file.get("url")
@@ -1395,7 +1447,9 @@ def main_page():
     def refresh_memory_panel():
         memory_panel_column.clear()
         with memory_panel_column:
-            records = MEMORY_STORE.list_memories(GENERAL_MEMORY_SCOPE)
+            selected_workspace = WORKSPACE_SERVICE.get_workspace(state["workspace_id"])
+            memory_scope_label.set_text(f"Workspace: {selected_workspace.name}")
+            records = WORKSPACE_SERVICE.list_memories(state["workspace_id"])
             if not records:
                 ui.label("No saved memories yet. Ask Sovereign to remember something explicitly.")
             for item in records:
@@ -1422,15 +1476,7 @@ def main_page():
 
     def verify_saved_memory(memory_id: str):
         try:
-            item = MEMORY_STORE.get(memory_id)
-            if item is None:
-                toast("Memory no longer exists.", "warning")
-                return
-            MEMORY_STORE.revise(
-                item.id, item.content,
-                source="user verified in memory panel",
-                verified=True,
-            )
+            WORKSPACE_SERVICE.verify(state["workspace_id"], memory_id)
             refresh_memory_panel()
             toast("Memory marked as verified.", "success")
         except Exception as exc:
@@ -1438,7 +1484,7 @@ def main_page():
 
     def delete_saved_memory(memory_id: str):
         try:
-            if MEMORY_STORE.delete(memory_id):
+            if WORKSPACE_SERVICE.forget(state["workspace_id"], memory_id):
                 toast("Memory and revision history permanently deleted.", "success")
             else:
                 toast("Memory no longer exists.", "warning")
@@ -1448,7 +1494,7 @@ def main_page():
 
     def export_memories():
         try:
-            payload = MEMORY_STORE.export_json(GENERAL_MEMORY_SCOPE)
+            payload = WORKSPACE_SERVICE.export_json(state["workspace_id"])
             fd, path = tempfile.mkstemp(prefix="sovereign-memory-", suffix=".json")
             os.close(fd)
             Path(path).write_text(payload, encoding="utf-8")
@@ -1459,14 +1505,17 @@ def main_page():
 
     async def on_refine():
         path = current_file["path"]
-        if not path or not GROQ_API_KEY:
-            toast("Nothing to refine." if not path else "No GROQ_API_KEY set.", "warning")
+        if not path:
+            toast("Nothing to refine.", "warning")
             return
         content = modal_content.value or ""
         set_status("thinking", "🟡 Processing")
         try:
             prompt = f"Refine and improve the following content. Return only the improved version:\n\n{content}"
-            refined = await run.io_bound(call_llm, state["persona"], [], prompt)
+            refined, model_info = await run.io_bound(
+                call_llm, state["persona"], [], prompt, state["workspace_id"]
+            )
+            model_indicator.set_text(f"Running: {model_info.label}")
             modal_content.set_value(refined)
             toast("Refined with AI.", "success")
         except Exception as exc:  # noqa: BLE001
@@ -1497,7 +1546,7 @@ def main_page():
     def clear_chat():
         state["history"] = []
         chat_log.clear()
-        save_chat_history([])
+        save_chat_history([], state["workspace_id"])
         toast("Chat history cleared.", "info")
 
     async def stop_speech():
@@ -1584,16 +1633,26 @@ def main_page():
         add_bubble("user", text)
         set_status("thinking", "🟡 Processing")
         try:
-            reply = await run.io_bound(call_llm, state["persona"], state["history"], text)
+            reply, model_info = await run.io_bound(
+                call_llm, state["persona"], state["history"], text, state["workspace_id"]
+            )
+            model_indicator.set_text(f"Running: {model_info.label}")
             state["history"].append(HumanMessage(content=text))
             state["history"].append(AIMessage(content=reply))
-            state["history"][:] = state["history"][-20:]
-            save_chat_history(state["history"])
+            state["history"][:] = state["history"][-10:]
+            save_chat_history(state["history"], state["workspace_id"])
             assistant_bubble_id = add_bubble("assistant", reply)
             refresh_files_list()  # picks up anything save_file/convert_file just wrote
             revert_to_idle()
             if state["auto_speak"]:
                 await speak_safe(reply, assistant_bubble_id)
+        except ModelRoutingError as exc:
+            model_indicator.set_text("Model: unavailable")
+            summary = str(exc).split("\nProvider details:")[0]
+            add_bubble("assistant", summary)
+            premium_dialog.open()
+            toast("All configured free/local models are unavailable. No paid request was made.", "warning")
+            revert_to_idle()
         except Exception as exc:  # noqa: BLE001
             toast(f"Something went wrong: {exc}", "error")
             revert_to_idle()
@@ -1632,8 +1691,8 @@ def main_page():
 # ─────────────────────────────────────────────────────────────────────────────
 
 if __name__ in {"__main__", "__mp_main__"}:
-    if not GROQ_API_KEY:
-        print("ERROR: Groq API key was not loaded. Create .env beside this script with GROQ_API_KEY=your_key")
+    if not MODEL_ROUTER.candidates:
+        print("WARNING: No model configured. Add GROQ_API_KEY, OPENROUTER_API_KEY, or configure OLLAMA_MODEL.")
     ui.run(
         title="Sovereign OS",
         native=False,          # FIX 6: real browser window -> minimize/maximize/close all present
