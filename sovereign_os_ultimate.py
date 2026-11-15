@@ -62,6 +62,7 @@ import re
 import json
 import time
 import asyncio
+import threading
 import tempfile
 import urllib.parse
 import urllib.request
@@ -542,17 +543,19 @@ def transcribe_raw_audio(raw_bytes: bytes) -> str:
 # TEXT-TO-SPEECH
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def synthesize_speech(text: str, voice: str = DEFAULT_VOICE):
-    """Create speech plus word-level timing marks for precise UI synchronisation."""
+async def synthesize_speech(text: str, voice: str = DEFAULT_VOICE, stop_event=None):
+    """Create speech plus word-level timing marks; observe cancellation between stream chunks."""
     fd, path = tempfile.mkstemp(suffix=".mp3")
     os.close(fd)
     boundaries = []
 
     async def _save():
         boundaries.clear()
-        communicate = edge_tts.Communicate(text, voice, rate="+12%", boundary="WordBoundary")
+        communicate = edge_tts.Communicate(text, voice, rate="+18%", boundary="WordBoundary")
         with open(path, "wb") as audio_file:
             async for chunk in communicate.stream():
+                if stop_event is not None and stop_event.is_set():
+                    break
                 if chunk["type"] == "audio":
                     audio_file.write(chunk["data"])
                 elif chunk["type"] == "WordBoundary":
@@ -578,9 +581,32 @@ def load_audio_file(path: str):
     return AudioSegment.from_file(path)
 
 
-def play_audio_segment(segment) -> None:
-    """Blocking local playback — always run via run.io_bound()."""
-    pydub_play(segment)
+def play_audio_segment(segment, stop_event=None) -> None:
+    """Play decoded audio in short chunks so a stop request is acted on quickly."""
+    audio = pyaudio.PyAudio()
+    stream = None
+    try:
+        stream = audio.open(
+            format=audio.get_format_from_width(segment.sample_width),
+            channels=segment.channels,
+            rate=segment.frame_rate,
+            output=True,
+            frames_per_buffer=1024,
+        )
+        frame_bytes = segment.frame_width * 1024
+        raw = segment.raw_data
+        for start in range(0, len(raw), frame_bytes):
+            if stop_event is not None and stop_event.is_set():
+                break
+            stream.write(raw[start:start + frame_bytes], exception_on_underflow=False)
+    finally:
+        if stream is not None:
+            try:
+                stream.stop_stream()
+            except Exception:
+                pass
+            stream.close()
+        audio.terminate()
 
 
 def remove_audio_file(path: str) -> None:
@@ -1086,6 +1112,7 @@ def main_page():
     state = {"persona": DEFAULT_PERSONA, "history": load_chat_history(), "auto_speak": False}
     current_file = {"path": None, "kind": "text"}
     recording_state = {"active": False, "stop": False}
+    speech_state = {"stop_event": None}
 
     # ---- FIX 1: thread-safety helpers -------------------------------------
     # Blocking work (mic recording, transcription, TTS playback) always runs
@@ -1116,6 +1143,8 @@ def main_page():
         ui.switch("Speak replies", value=False,
                   on_change=lambda e: state.update(auto_speak=e.value)
                   ).props("color=amber")
+        stop_speech_button = ui.button("Stop speech", icon="stop", on_click=lambda: stop_speech()).props("outline color=negative")
+        stop_speech_button.disable()
         ui.button(icon="delete_sweep", on_click=lambda: clear_chat()).props("flat").tooltip("Clear chat history")
         ui.select(list(PERSONAS.keys()), value=state["persona"],
                   on_change=lambda e: state.update(persona=e.value)
@@ -1272,24 +1301,43 @@ def main_page():
         save_chat_history([])
         toast("Chat history cleared.", "info")
 
+    async def stop_speech():
+        """Request immediate cancellation of synthesis or playback."""
+        event = speech_state.get("stop_event")
+        if event is not None:
+            event.set()
+            client.run_javascript("window.finishSpeechSync();")
+            set_status("idle", "⏹ Speech stopped")
+
     async def speak_safe(text: str, bubble_id: str):
         path = None
+        stop_event = threading.Event()
+        speech_state["stop_event"] = stop_event
+        stop_speech_button.enable()
         try:
-            set_status("thinking", "🟡 Preparing voice")
-            path, boundaries = await synthesize_speech(text)
+            set_status("thinking", "🟡 Preparing voice — Stop is available")
+            path, boundaries = await synthesize_speech(text, stop_event=stop_event)
+            if stop_event.is_set():
+                return
             segment = await run.io_bound(load_audio_file, path)
-            # Start the UI clock only after synthesis and decoding are complete.
+            if stop_event.is_set():
+                return
             client.run_javascript(
                 "window.startSpeechSync(" + json.dumps(boundaries) + ", " + json.dumps(bubble_id) + ");"
             )
-            await run.io_bound(play_audio_segment, segment)
-            client.run_javascript("window.finishSpeechSync();")
-            set_status("happy", "🟢 Online")
-            ui.timer(1.2, revert_to_idle, once=True)
+            await run.io_bound(play_audio_segment, segment, stop_event)
+            if not stop_event.is_set():
+                set_status("happy", "🟢 Online")
+                ui.timer(1.2, revert_to_idle, once=True)
         except Exception as exc:  # noqa: BLE001
-            toast(f"Voice playback unavailable: {exc}", "warning")
+            if not stop_event.is_set():
+                toast(f"Voice playback unavailable: {exc}", "warning")
             revert_to_idle()
         finally:
+            stop_event.set()
+            client.run_javascript("window.finishSpeechSync();")
+            speech_state["stop_event"] = None
+            stop_speech_button.disable()
             if path:
                 await run.io_bound(remove_audio_file, path)
 
