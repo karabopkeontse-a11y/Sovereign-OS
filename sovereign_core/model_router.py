@@ -149,7 +149,7 @@ class ModelRouter:
         for index in range(max(0, start_index), len(self.candidates)):
             candidate = self.candidates[index]
             try:
-                model = candidate.client.bind_tools(tools) if tools else candidate.client
+                model = candidate.client.bind_tools(tools) if tools is not None else candidate.client
                 result = model.invoke(messages)
                 return result, candidate.info, index
             except Exception as exc:
