@@ -113,6 +113,10 @@ class ModelRouter:
                 self.configuration_warnings.append(
                     "Groq client dependency is missing; install langchain-groq."
                 )
+            if not groups["groq"] and not any("Groq client dependency" in w for w in self.configuration_warnings):
+                self.configuration_warnings.append(
+                    "Groq key was found, but no Groq model client could be initialized. Check GROQ_MODEL and GROQ_FALLBACK_MODELS."
+                )
 
         openrouter_key = self.env.get("OPENROUTER_API_KEY", "").strip()
         if openrouter_key:
@@ -130,8 +134,12 @@ class ModelRouter:
                 ))
             except ImportError:
                 self.configuration_warnings.append(
-                    "OpenRouter/Ollama requires langchain-openai; install it with "
+                    "OpenRouter requires langchain-openai; install it with "
                     "'py -3.11 -m pip install langchain-openai'."
+                )
+            except Exception as exc:
+                self.configuration_warnings.append(
+                    f"OpenRouter client could not be initialized: {type(exc).__name__}: {exc}"
                 )
 
         ollama_model = self.env.get("OLLAMA_MODEL", "").strip()
@@ -151,6 +159,10 @@ class ModelRouter:
                 warning = "Ollama requires langchain-openai; install it with 'py -3.11 -m pip install langchain-openai'."
                 if warning not in self.configuration_warnings:
                     self.configuration_warnings.append(warning)
+            except Exception as exc:
+                self.configuration_warnings.append(
+                    f"Ollama client could not be initialized: {type(exc).__name__}: {exc}"
+                )
 
         order = [part.strip().casefold() for part in self.env.get(
             "SOVEREIGN_MODEL_ORDER", "groq,openrouter,ollama"
