@@ -5,6 +5,7 @@ Pass the same SQLite path used by TaskStore to share a local database.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -59,14 +60,22 @@ class MemoryStore:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
 
-    def _connect(self):
+    @contextmanager
+    def _connection(self):
         db = sqlite3.connect(self.db_path, timeout=15)
         db.row_factory = sqlite3.Row
         db.execute("PRAGMA foreign_keys=ON")
-        return db
+        try:
+            yield db
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
 
     def _initialize(self) -> None:
-        with self._connect() as db:
+        with self._connection() as db:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS memory_records_v2 (
                     id TEXT PRIMARY KEY,
@@ -152,7 +161,7 @@ class MemoryStore:
         now = _now()
         record = MemoryRecord(str(uuid4()), workspace_id, kind, content, source,
                               confidence, bool(verified), self.ACTIVE, 1, None, now, now)
-        with self._connect() as db:
+        with self._connection() as db:
             db.execute(
                 """INSERT INTO memory_records_v2
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -164,7 +173,7 @@ class MemoryStore:
         return record
 
     def get(self, memory_id: str) -> MemoryRecord | None:
-        with self._connect() as db:
+        with self._connection() as db:
             row = db.execute("SELECT * FROM memory_records_v2 WHERE id=?", (memory_id,)).fetchone()
         return self._record(row) if row else None
 
@@ -174,7 +183,7 @@ class MemoryStore:
         if not include_inactive:
             sql += " AND status='active'"
         sql += " ORDER BY updated_at DESC, id"
-        with self._connect() as db:
+        with self._connection() as db:
             rows = db.execute(sql, params).fetchall()
         return [self._record(row) for row in rows]
 
@@ -195,7 +204,7 @@ class MemoryStore:
             sql += " AND verified=1"
         sql += " ORDER BY verified DESC, confidence DESC, updated_at DESC LIMIT ?"
         params.append(limit)
-        with self._connect() as db:
+        with self._connection() as db:
             rows = db.execute(sql, params).fetchall()
         return [self._record(row) for row in rows]
 
@@ -205,7 +214,7 @@ class MemoryStore:
         if not content:
             raise ValueError("Memory content is required")
         now = _now()
-        with self._connect() as db:
+        with self._connection() as db:
             row = db.execute("SELECT * FROM memory_records_v2 WHERE id=?", (memory_id,)).fetchone()
             if not row:
                 raise ValueError("Memory does not exist")
@@ -239,7 +248,7 @@ class MemoryStore:
         if not content or not source or not 0 <= confidence <= 1:
             raise ValueError("Content, source and valid confidence are required")
         now = _now()
-        with self._connect() as db:
+        with self._connection() as db:
             row = db.execute("SELECT * FROM memory_records_v2 WHERE id=?", (memory_id,)).fetchone()
             if not row:
                 raise ValueError("Memory does not exist")
@@ -270,7 +279,7 @@ class MemoryStore:
 
     def retract(self, memory_id: str) -> MemoryRecord:
         now = _now()
-        with self._connect() as db:
+        with self._connection() as db:
             row = db.execute("SELECT * FROM memory_records_v2 WHERE id=?", (memory_id,)).fetchone()
             if not row:
                 raise ValueError("Memory does not exist")
@@ -290,7 +299,7 @@ class MemoryStore:
         return updated
 
     def history(self, memory_id: str) -> list[MemoryRevision]:
-        with self._connect() as db:
+        with self._connection() as db:
             rows = db.execute(
                 "SELECT * FROM memory_revisions WHERE memory_id=? ORDER BY revision",
                 (memory_id,),
@@ -299,13 +308,13 @@ class MemoryStore:
 
     def delete(self, memory_id: str) -> bool:
         """Permanently erase a memory and its revision history."""
-        with self._connect() as db:
+        with self._connection() as db:
             cursor = db.execute("DELETE FROM memory_records_v2 WHERE id=?", (memory_id,))
         return cursor.rowcount > 0
 
     def export_workspace(self, workspace_id: str) -> dict:
         records = self.list_memories(workspace_id, include_inactive=True)
-        with self._connect() as db:
+        with self._connection() as db:
             revisions = db.execute(
                 """SELECT r.* FROM memory_revisions r
                    JOIN memory_records_v2 m ON m.id=r.memory_id
