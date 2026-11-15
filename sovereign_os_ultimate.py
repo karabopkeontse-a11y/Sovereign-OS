@@ -116,6 +116,7 @@ MODEL_NAME = os.getenv("GROQ_MODEL", "qwen/qwen3.8-27b").strip()
 # Automatically migrate the retired model ID if it remains in an existing .env file.
 if MODEL_NAME == "qwen/qwen3.6-27b":
     MODEL_NAME = "qwen/qwen3.8-27b"
+os.environ["GROQ_MODEL"] = MODEL_NAME
 MAX_TOKENS = int(os.getenv("SOVEREIGN_MAX_OUTPUT_TOKENS", "800"))
 DEFAULT_VOICE = "en-US-AriaNeural"
 
@@ -1282,7 +1283,8 @@ def main_page():
     with ui.row().classes("app-header w-full"):
         ui.html('<span class="app-title">SOVEREIGN <span class="app-title-accent">OS</span></span>')
         ui.html('<span id="status-indicator" class="status-indicator">🟢 Online</span>')
-        model_indicator = ui.label("Model: waiting for first request").classes("files-empty")
+        initial_model = MODEL_ROUTER.candidates[0].info.label if MODEL_ROUTER.candidates else "No provider configured"
+        model_indicator = ui.label(f"Ready: {initial_model}").classes("files-empty")
         ui.space()
         ui.switch("Speak replies", value=False,
                   on_change=lambda e: state.update(auto_speak=e.value)
