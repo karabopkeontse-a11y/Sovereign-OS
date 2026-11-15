@@ -82,6 +82,8 @@ from langchain_groq import ChatGroq
 from langchain_core.tools import tool
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage
 
+from sovereign_core.memory import MemoryStore
+
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
@@ -115,6 +117,8 @@ DEFAULT_VOICE = "en-US-AriaNeural"
 
 WORKSPACE_DIR = BASE_DIR / "sovereign_workspace"
 WORKSPACE_DIR.mkdir(exist_ok=True)
+MEMORY_STORE = MemoryStore(WORKSPACE_DIR / "sovereign_tasks.sqlite3")
+GENERAL_MEMORY_SCOPE = "general"
 app.add_static_files("/workspace-files", str(WORKSPACE_DIR))  # lets the modal show/download images & videos directly
 
 # Deliberately a small, named allow-list rather than an arbitrary path the model could
@@ -405,6 +409,67 @@ def convert_file(filename: str, target_format: str, location: str = "workspace")
 TOOLS += [list_files, read_file, convert_file]
 
 
+@tool
+def remember_fact(content: str, kind: str = "fact", confidence: float = 1.0) -> str:
+    """Save a durable fact, preference, decision or procedure only when the user explicitly asks Sovereign to remember or save it."""
+    try:
+        item = MEMORY_STORE.remember(
+            workspace_id=GENERAL_MEMORY_SCOPE,
+            content=content,
+            kind=kind,
+            source="explicit user memory request",
+            confidence=confidence,
+            verified=False,
+        )
+        return f"Saved memory {item.id} (revision {item.revision}, confidence {item.confidence:.2f})."
+    except Exception as exc:
+        return f"Memory save failed: {type(exc).__name__}: {exc}"
+
+
+@tool
+def search_memories(query: str, verified_only: bool = False) -> str:
+    """Search Sovereign's saved memories when the user asks what was previously decided, said, preferred or saved."""
+    try:
+        matches = MEMORY_STORE.search(
+            GENERAL_MEMORY_SCOPE, query, limit=10, verified_only=verified_only
+        )
+        if not matches:
+            return "No matching saved memories were found."
+        return "\n".join(
+            f"- [{item.id}] ({item.kind}; source={item.source}; confidence={item.confidence:.2f}; verified={item.verified}) {item.content}"
+            for item in matches
+        )
+    except Exception as exc:
+        return f"Memory search failed: {type(exc).__name__}: {exc}"
+
+
+@tool
+def forget_memory(memory_id: str) -> str:
+    """Permanently delete one saved memory and its revision history when the user explicitly asks to forget/delete it."""
+    try:
+        return "Memory and revision history permanently deleted." if MEMORY_STORE.delete(memory_id) else "No memory with that ID was found."
+    except Exception as exc:
+        return f"Memory deletion failed: {type(exc).__name__}: {exc}"
+
+
+@tool
+def list_saved_memories() -> str:
+    """List saved general-workspace memories so the user can review their IDs and request deletion."""
+    try:
+        items = MEMORY_STORE.list_memories(GENERAL_MEMORY_SCOPE)
+        if not items:
+            return "There are no saved memories."
+        return "\n".join(
+            f"- [{item.id}] ({item.kind}; confidence={item.confidence:.2f}; verified={item.verified}) {item.content}"
+            for item in items
+        )
+    except Exception as exc:
+        return f"Memory listing failed: {type(exc).__name__}: {exc}"
+
+
+TOOLS += [remember_fact, search_memories, forget_memory, list_saved_memories]
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # LLM — manual tool-calling loop
 # ─────────────────────────────────────────────────────────────────────────────
@@ -456,7 +521,27 @@ def call_llm(persona_key: str, history: list, user_text: str) -> str:
     if not GROQ_API_KEY:
         raise RuntimeError("No GROQ_API_KEY found in .env — add one and restart.")
 
-    persona_prompt = (PERSONAS.get(persona_key, PERSONAS[DEFAULT_PERSONA]) + "\n\nLIVE DATA RULES: For any question about current weather, temperature, or forecasts, call get_weather with the exact place the user specifies. Never substitute another town or country. For a known Botswana town named without a country, interpret it as Botswana. Preserve the returned location, timestamp, units, forecast dates, and source. Never invent weather values or claim model data is a station observation. For current events, recent facts, prices, or general web research, call web_search. Report tool errors honestly.")
+    # Retrieve relevant durable memories locally before making a model call.
+    # Ordinary conversation is never automatically written to memory.
+    try:
+        recalled = MEMORY_STORE.search(GENERAL_MEMORY_SCOPE, user_text, limit=5)
+        memory_context = "\n".join(
+            f"- {item.content} (source: {item.source}; confidence: {item.confidence:.2f}; verified: {item.verified})"
+            for item in recalled
+        )
+    except Exception:
+        memory_context = ""
+    persona_prompt = (
+        PERSONAS.get(persona_key, PERSONAS[DEFAULT_PERSONA])
+        + "\n\nSOVEREIGN MEMORY RULES: Use the supplied saved-memory context only when relevant. "
+        "Do not claim a memory exists unless it appears in context or search_memories returns it. "
+        "Only call remember_fact when the user explicitly asks you to remember/save something. "
+        "Only call forget_memory when the user explicitly asks to forget/delete a saved memory. "
+        "Use list_saved_memories when the user asks what is saved. "
+        "A memory is not automatically verified merely because it was saved. "
+        "\nSaved-memory context:\n" + (memory_context or "(No keyword-matched memories.)")
+        + "\n\nLIVE DATA RULES: For any question about current weather, temperature, or forecasts, call get_weather with the exact place the user specifies. Never substitute another town or country. For a known Botswana town named without a country, interpret it as Botswana. Preserve the returned location, timestamp, units, forecast dates, and source. Never invent weather values or claim model data is a station observation. For current events, recent facts, prices, or general web research, call web_search. Report tool errors honestly."
+    )
     messages = [SystemMessage(content=persona_prompt)] + list(history) + [HumanMessage(content=user_text)]
 
     try:
@@ -1148,6 +1233,7 @@ def main_page():
         stop_speech_button = ui.button("Stop speech", icon="stop", on_click=lambda: stop_speech()).props("outline color=negative")
         stop_speech_button.disable()
         ui.button(icon="delete_sweep", on_click=lambda: clear_chat()).props("flat").tooltip("Clear chat history")
+        ui.button("Memory", icon="psychology", on_click=lambda: open_memory_panel()).props("outline color=primary")
         ui.select(list(PERSONAS.keys()), value=state["persona"],
                   on_change=lambda e: state.update(persona=e.value)
                   ).classes("persona-select").props("dark outlined dense")
@@ -1196,6 +1282,16 @@ def main_page():
                 .classes("modal-format-select")
             ui.button("Download", icon="download", on_click=lambda: on_download())
             ui.button("Close", on_click=file_dialog.close).props("flat")
+
+    # Saved-memory manager: review, verify, export or permanently erase records.
+    with ui.dialog() as memory_dialog, ui.card().classes("glass-modal"):
+        ui.label("Sovereign Memory Vault").classes("modal-title")
+        ui.label("General workspace memories. Saving is explicit; verification is user-controlled.")
+        memory_panel_column = ui.column().classes("w-full")
+        with ui.row().classes("modal-actions w-full"):
+            ui.button("Export JSON", icon="download", on_click=lambda: export_memories())
+            ui.button("Refresh", icon="refresh", on_click=lambda: refresh_memory_panel())
+            ui.button("Close", on_click=memory_dialog.close).props("flat")
 
     def _open_media_lightbox(kind: str):
         url = current_file.get("url")
@@ -1259,6 +1355,71 @@ def main_page():
                 with ui.row().classes("file-row w-full").on("click", lambda f=f: open_file_modal(f)):
                     ui.icon("description").classes("file-icon")
                     ui.label(f.name).classes("file-name")
+
+    def refresh_memory_panel():
+        memory_panel_column.clear()
+        with memory_panel_column:
+            records = MEMORY_STORE.list_memories(GENERAL_MEMORY_SCOPE)
+            if not records:
+                ui.label("No saved memories yet. Ask Sovereign to remember something explicitly.")
+            for item in records:
+                with ui.column().classes("w-full glass-panel").style("padding: 10px; margin: 6px 0;"):
+                    ui.label(item.content).classes("text-weight-medium")
+                    ui.label(
+                        f"{item.kind} | source: {item.source} | confidence: {item.confidence:.2f} | "
+                        f"{'verified' if item.verified else 'unverified'} | revision {item.revision}"
+                    ).classes("files-empty")
+                    with ui.row().classes("w-full"):
+                        if not item.verified:
+                            ui.button(
+                                "Mark verified", icon="verified",
+                                on_click=lambda item_id=item.id: verify_saved_memory(item_id)
+                            ).props("dense outline color=positive")
+                        ui.button(
+                            "Delete permanently", icon="delete",
+                            on_click=lambda item_id=item.id: delete_saved_memory(item_id)
+                        ).props("dense outline color=negative")
+
+    def open_memory_panel():
+        refresh_memory_panel()
+        memory_dialog.open()
+
+    def verify_saved_memory(memory_id: str):
+        try:
+            item = MEMORY_STORE.get(memory_id)
+            if item is None:
+                toast("Memory no longer exists.", "warning")
+                return
+            MEMORY_STORE.revise(
+                item.id, item.content,
+                source="user verified in memory panel",
+                verified=True,
+            )
+            refresh_memory_panel()
+            toast("Memory marked as verified.", "success")
+        except Exception as exc:
+            toast(f"Could not verify memory: {exc}", "error")
+
+    def delete_saved_memory(memory_id: str):
+        try:
+            if MEMORY_STORE.delete(memory_id):
+                toast("Memory and revision history permanently deleted.", "success")
+            else:
+                toast("Memory no longer exists.", "warning")
+            refresh_memory_panel()
+        except Exception as exc:
+            toast(f"Could not delete memory: {exc}", "error")
+
+    def export_memories():
+        try:
+            payload = MEMORY_STORE.export_json(GENERAL_MEMORY_SCOPE)
+            fd, path = tempfile.mkstemp(prefix="sovereign-memory-", suffix=".json")
+            os.close(fd)
+            Path(path).write_text(payload, encoding="utf-8")
+            ui.download(path, filename="sovereign-memory-export.json")
+            toast("Memory export prepared.", "success")
+        except Exception as exc:
+            toast(f"Memory export failed: {exc}", "error")
 
     async def on_refine():
         path = current_file["path"]
