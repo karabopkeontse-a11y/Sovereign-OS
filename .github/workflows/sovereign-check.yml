@@ -18,4 +18,6 @@ jobs:
         with:
           python-version: "3.11"
       - name: Compile Python source
-        run: python -m py_compile sovereign_os_ultimate.py
+        run: python -m compileall -q sovereign_os_ultimate.py sovereign_core tests
+      - name: Run offline engine tests
+        run: python -m unittest discover -s tests -v
