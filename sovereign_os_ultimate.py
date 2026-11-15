@@ -533,14 +533,14 @@ def call_llm(persona_key: str, history: list, user_text: str) -> str:
         memory_context = ""
     persona_prompt = (
         PERSONAS.get(persona_key, PERSONAS[DEFAULT_PERSONA])
-        + "\\n\\nSOVEREIGN MEMORY RULES: Use the supplied saved-memory context only when relevant. "
+        + "\n\nSOVEREIGN MEMORY RULES: Use the supplied saved-memory context only when relevant. "
         "Do not claim a memory exists unless it appears in context or search_memories returns it. "
         "Only call remember_fact when the user explicitly asks you to remember/save something. "
         "Only call forget_memory when the user explicitly asks to forget/delete a saved memory. "
         "Use list_saved_memories when the user asks what is saved. "
         "A memory is not automatically verified merely because it was saved. "
-        "\\nSaved-memory context:\\n" + (memory_context or "(No keyword-matched memories.)")
-        + "\\n\\nLIVE DATA RULES: For any question about current weather, temperature, or forecasts, call get_weather with the exact place the user specifies. Never substitute another town or country. For a known Botswana town named without a country, interpret it as Botswana. Preserve the returned location, timestamp, units, forecast dates, and source. Never invent weather values or claim model data is a station observation. For current events, recent facts, prices, or general web research, call web_search. Report tool errors honestly."
+        "\nSaved-memory context:\n" + (memory_context or "(No keyword-matched memories.)")
+        + "\n\nLIVE DATA RULES: For any question about current weather, temperature, or forecasts, call get_weather with the exact place the user specifies. Never substitute another town or country. For a known Botswana town named without a country, interpret it as Botswana. Preserve the returned location, timestamp, units, forecast dates, and source. Never invent weather values or claim model data is a station observation. For current events, recent facts, prices, or general web research, call web_search. Report tool errors honestly."
     )
     messages = [SystemMessage(content=persona_prompt)] + list(history) + [HumanMessage(content=user_text)]
 
