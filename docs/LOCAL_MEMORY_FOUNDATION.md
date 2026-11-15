@@ -48,3 +48,17 @@ Run the offline suite with:
 ```bash
 python -m unittest discover -s tests -v
 ```
+
+
+## Desktop chat integration
+
+The desktop assistant uses the same SQLite file at `sovereign_workspace/sovereign_tasks.sqlite3` and a dedicated `general` memory scope.
+
+- Relevant keyword-matched memories are retrieved locally and supplied to the assistant before a model call.
+- The assistant can save a memory only after an explicit user request.
+- Saved items begin unverified. The user can mark them verified in the Memory Vault.
+- The Memory Vault lists active general memories, exports JSON, and permanently deletes a selected record and its revision history.
+- Chat tools support explicit remember, search, list, correct/supersede, revision-history inspection and forget operations.
+- Corrections create a new active record and retain the old record as superseded; they do not silently overwrite the old fact.
+
+This first chat integration is intentionally limited to the general scope. Project-specific memory selection and authenticated multi-device synchronization are not yet implemented. The chat still uses the configured Groq model for responses; local memory retrieval itself does not consume model tokens.
