@@ -57,7 +57,7 @@ def _status_code(exc: Exception):
 def is_capacity_error(exc: Exception) -> bool:
     """Identify provider/model availability failures that justify failover."""
     status = _status_code(exc)
-    if status in {400, 401, 402, 403, 404, 408, 409, 425, 429}:
+    if status in {401, 402, 403, 404, 408, 409, 425, 429}:
         return True
     if status is not None and status >= 500:
         return True
