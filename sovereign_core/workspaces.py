@@ -29,6 +29,10 @@ class WorkspaceService:
     def list_workspaces(self) -> list[Workspace]:
         return self.tasks.list_workspaces()
 
+    def select_options(self) -> dict[str, str]:
+        """Return NiceGUI select options as value -> display label."""
+        return {workspace.id: workspace.name for workspace in self.list_workspaces()}
+
     def get_workspace(self, workspace_id: str) -> Workspace:
         item = self.tasks.get_workspace((workspace_id or "").strip())
         if item is None:
