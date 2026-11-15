@@ -1,13 +1,18 @@
-"""Resilient, provider-neutral model routing for SovereignOS.
+"""Resilient multi-provider model routing for SovereignOS.
 
-Only configured providers are eligible. OpenRouter is pinned to its free-model
-router; this module never silently routes to a paid OpenRouter model. Ollama is
-optional and only used when the user explicitly configures a local model.
+Providers are opt-in through environment variables. The router never selects an
+unconfigured provider and never enables a paid provider implicitly. Provider
+cooldowns are process-local and survive individual chat turns while this router
+singleton remains alive.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import os
+import re
+import time
+from email.utils import parsedate_to_datetime
 
 
 @dataclass(frozen=True)
@@ -38,18 +43,25 @@ class ModelRoutingError(RuntimeError):
         self.premium_required = True
 
 
-def is_capacity_error(exc: Exception) -> bool:
-    """Return true only for provider/model capacity or availability failures."""
+def _status_code(exc: Exception):
     status = getattr(exc, "status_code", None)
     response = getattr(exc, "response", None)
     if status is None and response is not None:
         status = getattr(response, "status_code", None)
-    if status in {401, 402, 403, 404, 408, 409, 425, 429}:
+    try:
+        return int(status) if status is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def is_capacity_error(exc: Exception) -> bool:
+    """Identify provider/model availability failures that justify failover."""
+    status = _status_code(exc)
+    if status in {400, 401, 402, 403, 404, 408, 409, 425, 429}:
         return True
-    if isinstance(status, int) and status >= 500:
+    if status is not None and status >= 500:
         return True
-    name = type(exc).__name__.casefold()
-    message = str(exc).casefold()
+    name, message = type(exc).__name__.casefold(), str(exc).casefold()
     if any(word in name for word in ("timeout", "connection", "ratelimit")):
         return True
     markers = (
@@ -59,27 +71,97 @@ def is_capacity_error(exc: Exception) -> bool:
         "service unavailable", "model_not_found", "model not found",
         "decommissioned", "maximum context length", "context_length_exceeded",
         "context window", "unauthorized", "invalid api key", "authentication",
-        "timed out", "connection refused", "connection reset",
-        "no endpoints found", "tool calling is not supported",
-        "does not support tool calling", "tool use is not supported",
+        "timed out", "connection refused", "connection reset", "no endpoints found",
+        "tool calling is not supported", "does not support tool calling",
+        "tool use is not supported", "unsupported tool",
     )
     return any(marker in message for marker in markers)
 
 
+def _retry_after_seconds(exc: Exception) -> float | None:
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", {}) or {}
+    value = headers.get("retry-after") or headers.get("Retry-After")
+    if not value:
+        return None
+    try:
+        return max(1.0, min(float(value), 86400.0))
+    except (TypeError, ValueError):
+        try:
+            when = parsedate_to_datetime(str(value))
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=timezone.utc)
+            return max(1.0, min((when - datetime.now(timezone.utc)).total_seconds(), 86400.0))
+        except Exception:
+            return None
+
+
 class ModelRouter:
-    """Ordered model candidates with request-local failover and transparent status."""
+    """Ordered model candidates with provider-level circuit breakers."""
 
     def __init__(self, max_tokens: int = 800, temperature: float = 0.7,
-                 environ=None):
+                 environ=None, clock=None):
         self.env = os.environ if environ is None else environ
         self.max_tokens = int(max_tokens)
         self.temperature = float(temperature)
         self.checkout_url = self.env.get("SOVEREIGN_PREMIUM_URL", "").strip()
         self.configuration_warnings: list[str] = []
+        self._clock = clock or time.monotonic
+        self._provider_cooldowns: dict[str, tuple[float, str]] = {}
+        self._candidate_cooldowns: dict[str, tuple[float, str]] = {}
+        self._provider_failures: dict[str, int] = {}
+        self._provider_successes: dict[str, int] = {}
         self.candidates = self._build_candidates()
 
+    def _openai_compatible(self, provider: str, key: str, model: str,
+                           base_url: str, runtime: str = "cloud",
+                           extra_headers: dict | None = None):
+        try:
+            from langchain_openai import ChatOpenAI
+        except ImportError:
+            self.configuration_warnings.append(
+                f"{provider} requires langchain-openai; install with "
+                "'py -3.11 -m pip install langchain-openai'."
+            )
+            return None
+        try:
+            return ChatOpenAI(
+                model=model, api_key=key, base_url=base_url,
+                max_tokens=self.max_tokens, temperature=self.temperature,
+                default_headers=extra_headers or {},
+            )
+        except Exception as exc:
+            self.configuration_warnings.append(
+                f"{provider} client could not initialize: {type(exc).__name__}: {exc}"
+            )
+            return None
+
+    def _add_compatible(self, groups, provider, env_key, model_key,
+                        default_model, base_url, runtime="cloud",
+                        headers=None, require_opt_in=None):
+        key = self.env.get(env_key, "").strip()
+        if not key:
+            return
+        if require_opt_in and self.env.get(require_opt_in, "").casefold() not in {"1", "true", "yes", "on"}:
+            self.configuration_warnings.append(
+                f"{provider} key is present but disabled; set {require_opt_in}=true only if you accept its billing terms."
+            )
+            return
+        model = self.env.get(model_key, default_model).strip()
+        if not model:
+            self.configuration_warnings.append(f"{provider} key is set but its model name is empty.")
+            return
+        client = self._openai_compatible(provider, key, model, base_url, runtime, headers)
+        if client is not None:
+            groups[provider.casefold()].append(
+                ModelCandidate(ModelInfo(provider, model, runtime), client)
+            )
+
     def _build_candidates(self) -> list[ModelCandidate]:
-        groups: dict[str, list[ModelCandidate]] = {"groq": [], "openrouter": [], "ollama": []}
+        groups = {name: [] for name in (
+            "groq", "openrouter", "cloudflare", "zai", "sambanova",
+            "nvidia", "ollama", "mistral"
+        )}
         groq_key = self.env.get("GROQ_API_KEY", "").strip()
         if groq_key:
             try:
@@ -102,103 +184,156 @@ class ModelRouter:
                         kwargs.pop("reasoning_format", None)
                         try:
                             client = ChatGroq(**kwargs)
-                        except Exception:
+                        except Exception as exc:
+                            self.configuration_warnings.append(f"Groq model {model} failed to initialize: {exc}")
                             continue
-                    except Exception:
+                    except Exception as exc:
+                        self.configuration_warnings.append(f"Groq model {model} failed to initialize: {exc}")
                         continue
-                    groups["groq"].append(ModelCandidate(
-                        ModelInfo("Groq", model, "cloud"), client
-                    ))
+                    groups["groq"].append(ModelCandidate(ModelInfo("Groq", model, "cloud"), client))
             except ImportError:
-                self.configuration_warnings.append(
-                    "Groq client dependency is missing; install langchain-groq."
-                )
+                self.configuration_warnings.append("Groq client dependency is missing; install langchain-groq.")
             if not groups["groq"] and not any("Groq client dependency" in w for w in self.configuration_warnings):
-                self.configuration_warnings.append(
-                    "Groq key was found, but no Groq model client could be initialized. Check GROQ_MODEL and GROQ_FALLBACK_MODELS."
-                )
+                self.configuration_warnings.append("Groq key found, but no Groq model client initialized. Check model IDs and dependencies.")
 
-        openrouter_key = self.env.get("OPENROUTER_API_KEY", "").strip()
-        if openrouter_key:
-            try:
-                from langchain_openai import ChatOpenAI
-                # Deliberately fixed: never accept an arbitrary paid model via env.
-                groups["openrouter"].append(ModelCandidate(
-                    ModelInfo("OpenRouter Free", "openrouter/free", "cloud"),
-                    ChatOpenAI(
-                        model="openrouter/free", api_key=openrouter_key,
-                        base_url="https://openrouter.ai/api/v1",
-                        max_tokens=self.max_tokens, temperature=self.temperature,
-                        default_headers={"X-Title": "SovereignOS"},
-                    ),
-                ))
-            except ImportError:
-                self.configuration_warnings.append(
-                    "OpenRouter requires langchain-openai; install it with "
-                    "'py -3.11 -m pip install langchain-openai'."
-                )
-            except Exception as exc:
-                self.configuration_warnings.append(
-                    f"OpenRouter client could not be initialized: {type(exc).__name__}: {exc}"
-                )
+        self._add_compatible(groups, "OpenRouter Free", "OPENROUTER_API_KEY",
+            "OPENROUTER_MODEL", "openrouter/free", "https://openrouter.ai/api/v1",
+            headers={"X-Title": "SovereignOS"})
+        # Cloudflare's free daily allocation is shared across its account. Choose
+        # a model that Cloudflare currently lists as Free-plan eligible by default.
+        account = self.env.get("CLOUDFLARE_ACCOUNT_ID", "").strip()
+        cf_key = self.env.get("CLOUDFLARE_API_TOKEN", "").strip()
+        if cf_key and account:
+            self._add_compatible(groups, "Cloudflare Workers AI", "CLOUDFLARE_API_TOKEN",
+                "CLOUDFLARE_MODEL", "@cf/zai-org/glm-4.7-flash",
+                f"https://api.cloudflare.com/client/v4/accounts/{account}/ai/v1")
+        elif cf_key or account:
+            self.configuration_warnings.append("Cloudflare requires both CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN.")
+
+        self._add_compatible(groups, "Z.AI", "ZAI_API_KEY", "ZAI_MODEL",
+            "glm-4.7-flash", self.env.get("ZAI_BASE_URL", "https://api.z.ai/api/paas/v4"))
+        self._add_compatible(groups, "SambaNova", "SAMBANOVA_API_KEY", "SAMBANOVA_MODEL",
+            "DeepSeek-V3.1", self.env.get("SAMBANOVA_BASE_URL", "https://api.sambanova.ai/v1"))
+        self._add_compatible(groups, "NVIDIA NIM", "NVIDIA_API_KEY", "NVIDIA_MODEL",
+            "meta/llama-3.3-70b-instruct", self.env.get("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1"))
+        # Mistral API is not treated as a free tier. It is impossible to activate
+        # accidentally: key plus an explicit opt-in are both required.
+        self._add_compatible(groups, "Mistral API (paid opt-in)", "MISTRAL_API_KEY",
+            "MISTRAL_MODEL", "mistral-small-latest",
+            "https://api.mistral.ai/v1", require_opt_in="SOVEREIGN_ENABLE_PAID_MISTRAL")
 
         ollama_model = self.env.get("OLLAMA_MODEL", "").strip()
         if ollama_model:
-            try:
-                from langchain_openai import ChatOpenAI
-                base_url = self.env.get("OLLAMA_BASE_URL", "http://localhost:11434/v1").strip()
-                groups["ollama"].append(ModelCandidate(
-                    ModelInfo("Ollama", ollama_model, "local"),
-                    ChatOpenAI(
-                        model=ollama_model, api_key="ollama",
-                        base_url=base_url, max_tokens=self.max_tokens,
-                        temperature=self.temperature,
-                    ),
-                ))
-            except ImportError:
-                warning = "Ollama requires langchain-openai; install it with 'py -3.11 -m pip install langchain-openai'."
-                if warning not in self.configuration_warnings:
-                    self.configuration_warnings.append(warning)
-            except Exception as exc:
-                self.configuration_warnings.append(
-                    f"Ollama client could not be initialized: {type(exc).__name__}: {exc}"
-                )
+            base_url = self.env.get("OLLAMA_BASE_URL", "http://localhost:11434/v1").strip()
+            client = self._openai_compatible("Ollama", "ollama", ollama_model, base_url, "local")
+            if client is not None:
+                groups["ollama"].append(ModelCandidate(ModelInfo("Ollama", ollama_model, "local"), client))
 
         order = [part.strip().casefold() for part in self.env.get(
-            "SOVEREIGN_MODEL_ORDER", "groq,openrouter,ollama"
+            "SOVEREIGN_MODEL_ORDER",
+            "groq,openrouter,cloudflare,zai,sambanova,nvidia,ollama"
         ).split(",") if part.strip()]
-        result: list[ModelCandidate] = []
+        result = []
         for provider in order:
             result.extend(groups.get(provider, []))
+        # Paid Mistral is deliberately absent from the default order.
+        if "mistral" in order and groups["mistral"]:
+            result.extend(groups["mistral"])
         return result
 
+    def _cooldown_key(self, candidate: ModelCandidate) -> str:
+        return f"{candidate.info.provider.casefold()}::{candidate.info.model.casefold()}"
+
+    def _cooldown_duration(self, exc: Exception) -> float:
+        status = _status_code(exc)
+        retry = _retry_after_seconds(exc)
+        if retry is not None:
+            return retry
+        if status == 429:
+            return 60.0
+        if status == 402:
+            return 3600.0
+        if status in {401, 403}:
+            return 1800.0
+        if status == 404:
+            return 86400.0
+        if status and status >= 500:
+            return 45.0
+        return 30.0
+
+    def _record_failure(self, candidate: ModelCandidate, exc: Exception):
+        provider = candidate.info.provider.casefold()
+        status = _status_code(exc)
+        duration = self._cooldown_duration(exc)
+        self._provider_failures[provider] = self._provider_failures.get(provider, 0) + 1
+        # A bad model ID/tool capability should not disable other models at the
+        # same provider; account/auth/quota/network failures should.
+        if status == 404 or "model not found" in str(exc).casefold():
+            self._candidate_cooldowns[self._cooldown_key(candidate)] = (self._clock() + duration, str(exc)[:240])
+        else:
+            self._provider_cooldowns[provider] = (self._clock() + duration, str(exc)[:240])
+
+    def _eligible(self, candidate: ModelCandidate) -> tuple[bool, str]:
+        now = self._clock()
+        key = self._cooldown_key(candidate)
+        candidate_state = self._candidate_cooldowns.get(key)
+        if candidate_state and candidate_state[0] > now:
+            return False, f"model cooldown ({int(candidate_state[0] - now)}s): {candidate_state[1]}"
+        provider_state = self._provider_cooldowns.get(candidate.info.provider.casefold())
+        if provider_state and provider_state[0] > now:
+            return False, f"provider cooldown ({int(provider_state[0] - now)}s): {provider_state[1]}"
+        return True, ""
+
+    def health_snapshot(self) -> list[dict]:
+        """Return safe, credential-free health details for a UI or diagnostics panel."""
+        rows = []
+        now = self._clock()
+        for candidate in self.candidates:
+            provider = candidate.info.provider
+            eligible, reason = self._eligible(candidate)
+            rows.append({
+                "provider": provider, "model": candidate.info.model,
+                "runtime": candidate.info.runtime,
+                "status": "ready" if eligible else "cooldown",
+                "cooldown_reason": reason,
+                "failures": self._provider_failures.get(provider.casefold(), 0),
+                "successes": self._provider_successes.get(provider.casefold(), 0),
+            })
+        return rows
+
     def invoke(self, messages, tools=None, start_index: int = 0):
-        """Invoke candidates in order. Returns (AIMessage, ModelInfo, candidate_index)."""
+        """Invoke in order, skipping providers still cooling down."""
         failures: list[str] = []
         if not self.candidates:
+            details = " ".join(self.configuration_warnings)
             raise ModelRoutingError(
-                "No model provider is configured. Add a Groq key, an OpenRouter key "
-                "for free models, or configure an existing local Ollama model. "
-                + (" Setup: " + " ".join(self.configuration_warnings)
-                   if self.configuration_warnings else ""),
+                "No model provider is configured. Configure Groq, OpenRouter Free, "
+                "Cloudflare Workers AI, Z.AI, SambaNova, NVIDIA NIM, or an explicitly "
+                "configured local Ollama model. " + details,
                 checkout_url=self.checkout_url,
             )
         for index in range(max(0, start_index), len(self.candidates)):
             candidate = self.candidates[index]
+            eligible, reason = self._eligible(candidate)
+            if not eligible:
+                failures.append(f"{candidate.info.label}: skipped: {reason}")
+                continue
             try:
                 model = candidate.client.bind_tools(tools) if tools is not None else candidate.client
                 result = model.invoke(messages)
+                provider = candidate.info.provider.casefold()
+                self._provider_successes[provider] = self._provider_successes.get(provider, 0) + 1
                 return result, candidate.info, index
             except Exception as exc:
                 failures.append(f"{candidate.info.label}: {type(exc).__name__}: {exc}")
                 if not is_capacity_error(exc):
                     raise
-        detail = "\n".join(failures[-6:])
+                self._record_failure(candidate, exc)
+        detail = "\n".join(failures[-10:])
         raise ModelRoutingError(
-            "All configured model options are currently unavailable or out of quota. "
-            "Sovereign did not make a paid request. Add another free provider key, "
-            "wait for quota reset, or configure a local model. Premium access is "
-            "not activated until an official checkout and entitlement service is connected."
-            + (f"\nProvider details:\n{detail}" if detail else ""),
+            "All configured model options are currently unavailable, cooling down, "
+            "or out of quota. Sovereign did not make a paid request. Wait for a "
+            "provider reset or configure another eligible provider. Paid providers "
+            "remain disabled unless explicitly opted in.\nProvider details:\n" + detail,
             failures=failures, checkout_url=self.checkout_url,
         )
