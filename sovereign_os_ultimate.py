@@ -83,7 +83,7 @@ from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, Tool
 
 from sovereign_core.memory import MemoryStore
 from sovereign_core.workspaces import WorkspaceService
-from sovereign_core.model_router import ModelRouter, ModelRoutingError
+from sovereign_core.model_router import ModelRouter, ModelRoutingError, ModelInfo
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIG
@@ -97,7 +97,10 @@ BASE_DIR = Path(__file__).resolve().parent
 ENV_CANDIDATES = [BASE_DIR / ".env", BASE_DIR / "example.env", BASE_DIR / ".enc", BASE_DIR / ".env.txt", BASE_DIR / "example.env.txt", BASE_DIR / ".env.example"]
 ENV_FILE = next(
     (candidate for candidate in ENV_CANDIDATES
-     if candidate.is_file() and dotenv_values(candidate).get("GROQ_API_KEY")),
+     if candidate.is_file() and any(
+         dotenv_values(candidate).get(key)
+         for key in ("GROQ_API_KEY", "OPENROUTER_API_KEY", "OLLAMA_MODEL")
+     )),
     None,
 )
 if ENV_FILE is not None:
@@ -564,15 +567,22 @@ def call_llm(persona_key: str, history: list, user_text: str,
     tool_map = {item.name: item for item in active_tools}
     active_index = 0
     active_info = None
+    fallback_used = False
+
+    def reported_model():
+        if active_info is None:
+            return None
+        return ModelInfo(active_info.provider, active_info.model, active_info.runtime, fallback_used)
 
     for _ in range(MAX_TOOL_HOPS):
         ai_message, active_info, active_index = MODEL_ROUTER.invoke(
             messages, tools=active_tools, start_index=active_index
         )
+        fallback_used = fallback_used or active_index > 0
         messages.append(ai_message)
         calls = getattr(ai_message, "tool_calls", None)
         if not calls:
-            return ai_message.content, active_info
+            return ai_message.content, reported_model()
         for call in calls:
             tool_fn = tool_map.get(call["name"])
             try:
@@ -581,10 +591,11 @@ def call_llm(persona_key: str, history: list, user_text: str,
                 result = f"Tool error: {type(exc).__name__}: {exc}"
             messages.append(ToolMessage(content=str(result)[:5000], tool_call_id=call["id"]))
 
-    final_message, active_info, _ = MODEL_ROUTER.invoke(
+    final_message, active_info, final_index = MODEL_ROUTER.invoke(
         messages, tools=None, start_index=active_index
     )
-    return final_message.content, active_info
+    fallback_used = fallback_used or final_index > 0
+    return final_message.content, reported_model()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1637,10 +1648,8 @@ def main_page():
             model_indicator.set_text("Model: unavailable")
             summary = str(exc).split("\nProvider details:")[0]
             add_bubble("assistant", summary)
-            if exc.checkout_url:
-                premium_dialog.open()
-            else:
-                toast("All configured free/local models are unavailable. No paid request was made.", "warning")
+            premium_dialog.open()
+            toast("All configured free/local models are unavailable. No paid request was made.", "warning")
             revert_to_idle()
         except Exception as exc:  # noqa: BLE001
             toast(f"Something went wrong: {exc}", "error")
