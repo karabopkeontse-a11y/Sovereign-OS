@@ -91,7 +91,7 @@ class MemoryStore:
                     supersedes_id TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
-                    FOREIGN KEY(supersedes_id) REFERENCES memory_records_v2(id)
+                    FOREIGN KEY(supersedes_id) REFERENCES memory_records_v2(id) ON DELETE SET NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_memory_scope_status
                     ON memory_records_v2(workspace_id, status, updated_at);
