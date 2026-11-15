@@ -1366,6 +1366,10 @@ def main_page():
             # Keep successfully generated audio after Stop/finish so Replay is instant.
             if path and bubble_id not in speech_state["cache"]:
                 await run.io_bound(remove_audio_file, path)
+            if speech_state.get("last") in speech_state["cache"]:
+                replay_speech_button.enable()
+            else:
+                replay_speech_button.disable()
 
     async def replay_last_speech():
         bubble_id = speech_state.get("last")
