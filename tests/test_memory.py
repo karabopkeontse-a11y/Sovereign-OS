@@ -62,6 +62,13 @@ class MemoryStoreTests(unittest.TestCase):
         self.assertEqual(self.store.history(saved.id), [])
         self.assertFalse(self.store.delete(saved.id))
 
+    def test_delete_superseded_record_preserves_successor(self):
+        old = self.store.remember("p1", "Old fact")
+        new = self.store.supersede(old.id, "Corrected fact", source="user correction")
+        self.assertTrue(self.store.delete(old.id))
+        self.assertIsNone(self.store.get(old.id))
+        self.assertEqual(self.store.get(new.id).supersedes_id, None)
+
     def test_export_is_valid_json_and_includes_revisions(self):
         saved = self.store.remember("p1", "Exportable memory")
         payload = json.loads(self.store.export_json("p1"))
