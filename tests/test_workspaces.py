@@ -28,6 +28,12 @@ class WorkspaceServiceTests(unittest.TestCase):
         self.assertEqual(len([w for w in self.service.list_workspaces()
                               if w.name.casefold() == "project x"]), 1)
 
+    def test_select_options_use_workspace_ids_as_values(self):
+        workspaces = self.service.ensure_default_workspaces()
+        options = self.service.select_options()
+        self.assertEqual(set(options), {workspace.id for workspace in workspaces})
+        self.assertEqual(options[next(w.id for w in workspaces if w.name == "SovereignOS")], "SovereignOS")
+
     def test_memory_is_scoped_to_workspace(self):
         a = self.service.create_workspace("Alpha")
         b = self.service.create_workspace("Beta")
