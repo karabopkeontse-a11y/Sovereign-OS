@@ -99,7 +99,7 @@ ENV_FILE = next(
     (candidate for candidate in ENV_CANDIDATES
      if candidate.is_file() and any(
          dotenv_values(candidate).get(key)
-         for key in ("GROQ_API_KEY", "OPENROUTER_API_KEY", "OLLAMA_MODEL")
+         for key in ("GROQ_API_KEY", "OPENROUTER_API_KEY", "CLOUDFLARE_API_TOKEN", "ZAI_API_KEY", "SAMBANOVA_API_KEY", "NVIDIA_API_KEY", "MISTRAL_API_KEY", "OLLAMA_MODEL")
      )),
     None,
 )
