@@ -323,7 +323,7 @@ class ModelRouter:
             })
         return rows
 
-    def invoke(self, messages, tools=None, start_index: int | None = None):
+    def invoke(self, messages, tools=None, start_index: int | None = None, max_tokens: int | None = None):
         """Invoke from the manually selected model, then use configured fallbacks."""
         if start_index is None:
             start_index = self.active_index
@@ -345,7 +345,9 @@ class ModelRouter:
                 failures.append(f"{candidate.info.label}: skipped: {reason}")
                 continue
             try:
-                model = candidate.client.bind_tools(tools) if tools is not None else candidate.client
+                model = candidate.client.bind(max_tokens=int(max_tokens)) if max_tokens is not None else candidate.client
+                if tools is not None:
+                    model = model.bind_tools(tools)
                 result = model.invoke(messages)
                 provider = candidate.info.provider.casefold()
                 self._provider_successes[provider] = self._provider_successes.get(provider, 0) + 1
