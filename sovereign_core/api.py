@@ -16,6 +16,7 @@ def now():
 class ChatInput(BaseModel):
     message: str = Field(min_length=1, max_length=12000)
     conversation_id: str | None = None
+    voice_mode: bool = False
 
 class ModelSelectInput(BaseModel):
     provider: str = Field(min_length=1, max_length=80)
@@ -88,6 +89,8 @@ class SovereignAPI:
                   + workspace.purpose + ". Use only this workspace context. Never claim to execute "
                   "external actions. Financial, publishing, destructive and physical-device actions "
                   "require human approval. Relevant memories:\n" + (memory_context or "(none)"))
+        if payload.voice_mode:
+            system += " For voice conversations, respond naturally and concisely, like a helpful person on a live call. Use short spoken sentences, avoid Markdown, tables and decorative symbols, and lead with the useful answer."
         try:
             from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
             messages = [SystemMessage(content=system)]
@@ -96,7 +99,7 @@ class SovereignAPI:
                                 else AIMessage(content=item["content"]))
             messages.append(HumanMessage(content=payload.message))
             router = self.get_router()
-            response, info, used_index = router.invoke(messages)
+            response, info, used_index = router.invoke(messages, max_tokens=320 if payload.voice_mode else None)
             reply = response.content if hasattr(response, "content") else str(response)
             provider, model = info.provider, info.model
         except Exception as exc:
