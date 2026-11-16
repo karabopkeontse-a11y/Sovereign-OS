@@ -217,9 +217,31 @@ class ModelRouter:
             if not groups["groq"] and not any("Groq client dependency" in w for w in self.configuration_warnings):
                 self.configuration_warnings.append("Groq key found, but no Groq model client initialized. Check model IDs and dependencies.")
 
-        self._add_compatible(groups, "OpenRouter Free", "OPENROUTER_API_KEY",
-            "OPENROUTER_MODEL", "openrouter/free", "https://openrouter.ai/api/v1",
-            headers={"X-Title": "SovereignOS"})
+        openrouter_models = [
+            self.env.get("OPENROUTER_MODEL", "openrouter/free").strip(),
+            *[value.strip() for value in self.env.get(
+                "OPENROUTER_FALLBACK_MODELS",
+                "nvidia/nemotron-3.5-super-vl:free,nvidia/nemotron-3-ultra-550b-a55b:free,cohere/north-mini-code:free"
+            ).split(",") if value.strip()],
+        ]
+        seen_openrouter = set()
+        for index, model in enumerate(openrouter_models):
+            if not model or model.casefold() in seen_openrouter:
+                continue
+            seen_openrouter.add(model.casefold())
+            if index == 0:
+                self._add_compatible(groups, "OpenRouter Free", "OPENROUTER_API_KEY",
+                    "OPENROUTER_MODEL", "openrouter/free", "https://openrouter.ai/api/v1",
+                    headers={"X-Title": "SovereignOS"})
+            else:
+                key = self.env.get("OPENROUTER_API_KEY", "").strip()
+                if key:
+                    client = self._openai_compatible("OpenRouter Free", key, model,
+                        "https://openrouter.ai/api/v1", extra_headers={"X-Title": "SovereignOS"})
+                    if client is not None:
+                        groups["openrouter"].append(
+                            ModelCandidate(ModelInfo("OpenRouter Free", model, "cloud"), client)
+                        )
         # Cloudflare's free daily allocation is shared across its account. Choose
         # a model that Cloudflare currently lists as Free-plan eligible by default.
         account = self.env.get("CLOUDFLARE_ACCOUNT_ID", "").strip()
