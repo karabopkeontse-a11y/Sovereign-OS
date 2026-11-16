@@ -336,7 +336,9 @@ class ModelRouter:
                 "configured local Ollama model. " + details,
                 checkout_url=self.checkout_url,
             )
-        for index in range(max(0, start_index), len(self.candidates)):
+        start_index = max(0, min(int(start_index), len(self.candidates) - 1))
+        order = list(range(start_index, len(self.candidates))) + list(range(0, start_index))
+        for index in order:
             candidate = self.candidates[index]
             eligible, reason = self._eligible(candidate)
             if not eligible:
