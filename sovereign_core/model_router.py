@@ -282,6 +282,10 @@ class ModelRouter:
         # Paid Mistral is deliberately absent from the default order.
         if "mistral" in order and groups["mistral"]:
             result.extend(groups["mistral"])
+        if not result and not self.configuration_warnings:
+            self.configuration_warnings.append(
+                "No provider credentials were found in the API process. Add GROQ_API_KEY or OPENROUTER_API_KEY to the project .env file, then restart the API."
+            )
         return result
 
     def _cooldown_key(self, candidate: ModelCandidate) -> str:
