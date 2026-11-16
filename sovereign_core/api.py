@@ -8,7 +8,14 @@ from uuid import uuid4
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
+from dotenv import load_dotenv
 from .workspaces import WorkspaceService
+
+# Load local provider credentials from the project root without overriding
+# environment variables explicitly supplied by the launching process.
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+load_dotenv(PROJECT_ROOT / ".env", override=False)
+load_dotenv(PROJECT_ROOT / ".env.local", override=False)
 
 def now():
     return datetime.now(timezone.utc).isoformat()
