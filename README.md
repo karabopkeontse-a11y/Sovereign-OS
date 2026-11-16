@@ -20,6 +20,13 @@ Install API dependencies:
 py -3.11 -m pip install -r requirements-api.txt
 ```
 
+Configure at least one model provider locally. Copy `.env.template` to `.env`, then add your own `GROQ_API_KEY` or `OPENROUTER_API_KEY`. The API loads `.env` and `.env.local` from the repository root without overriding environment variables already set by Windows. These files are excluded from Git; never commit provider keys.
+
+```powershell
+Copy-Item .env.template .env
+notepad .env
+```
+
 Set a private random bearer token in your local environment file, then start the API:
 
 ```bat
