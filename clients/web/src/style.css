@@ -267,7 +267,7 @@ body[data-core-state="speaking"] .orb-ring{border-color:#20cfff;filter:brightnes
 .composer-row textarea::placeholder{color:#6686a6}
 .composer-row button{flex:0 0 126px;min-height:49px;border-radius:14px;font-size:12px;letter-spacing:.04em}
 .composer-row button span{font-size:17px;margin-left:8px}
-.composer-foot{font-size:8px;letter-spacing:.08em;color:#6686a5}\n.composer-row textarea{transition:height .12s ease}\n.bubble.assistant{white-space:pre-wrap;overflow-wrap:anywhere}\n.voice-state-indicator[data-state="preparing"]{border-color:#347ca5;box-shadow:0 0 24px #087bff22}\n.voice-state-indicator[data-state="preparing"] .voice-state-copy strong{color:#b6eaff}\n.voice-state-indicator[data-state="preparing"] .voice-wave i{background:#6ab8e7;opacity:1;animation:voiceBars .8s ease-in-out infinite}\n@media(max-width:520px){.composer{width:calc(100% - 18px);max-width:none;margin:0 9px 10px}}
+.composer-foot{font-size:8px;letter-spacing:.08em;color:#6686a5}
 .voice-state-indicator{width:min(470px,92%);min-height:82px;margin:0 auto 10px;padding:14px 20px;display:flex;align-items:center;justify-content:center;gap:20px;border:1px solid #1e638b;border-radius:18px;background:linear-gradient(120deg,#071a30ee,#0b2941dd);box-shadow:0 12px 36px #0005,inset 0 1px #ffffff0c;transition:border-color .25s,box-shadow .25s,background .25s}
 .voice-wave{height:34px;display:flex;align-items:center;justify-content:center;gap:4px}
 .voice-wave i{display:block;width:3px;height:7px;border-radius:5px;background:#4d7596;opacity:.7;transform:scaleY(.55)}
@@ -291,3 +291,18 @@ body[data-core-state="speaking"] .orb-ring{border-color:#20cfff;filter:brightnes
 @media(max-width:850px){.intelligence-workspace{height:auto;min-height:calc(100dvh - 170px)}.chatpanel{height:auto!important;min-height:70dvh!important;flex:1 1 auto}.messages{min-height:390px!important}.intel-state{margin-left:0}}
 @media(max-width:520px){.intelligence-workspace{min-height:0;height:auto}.chatpanel{min-height:calc(100dvh - 300px)!important}.messages{min-height:360px!important;padding:18px 13px}.composer{margin:0 9px 10px;padding:10px}.composer-top span:last-child,.composer-foot span:last-child{display:none}.composer-row{align-items:stretch;flex-direction:column;gap:6px}.composer-row textarea{min-height:48px}.composer-row button{width:100%;flex-basis:auto}.voice-state-indicator{gap:12px;padding:12px}.voice-state-copy{min-width:0}.voice-state-copy small{max-width:200px}.hero .orb-orbit{width:260px;height:260px;margin:-130px 0 0 -130px}.hero .orb{width:160px;height:160px}.hero .orb img{width:148px;height:148px}}
 @media(prefers-reduced-motion:reduce){.hero .orb,.hero .orb-orbit,.welcome-mark,.composer-live-dot,.voice-wave i,.thinking-bubble:after{animation:none!important}}
+
+/* 2030 Intelligence console: conversation first, compact adaptive composer. */
+#view-chat{min-height:0}
+.intelligence-workspace{height:calc(100dvh - 205px);min-height:440px;max-width:1500px;display:flex;flex-direction:column;gap:0}
+.chatpanel{height:auto!important;min-height:0!important;flex:1 1 auto;display:flex;flex-direction:column;overflow:hidden;padding:10px 12px 0}
+.messages{flex:1 1 0;min-height:0!important;max-height:none!important;overflow-y:auto;overscroll-behavior:contain;padding:clamp(16px,2.6vw,38px);scrollbar-width:thin}
+.composer{width:min(calc(100% - 20px),780px);max-width:780px;margin:0 auto 14px;padding:10px 14px 8px}
+.composer-row{display:flex;flex-direction:row;align-items:flex-end;gap:10px;min-width:0}
+.composer-row textarea{flex:1 1 0;min-width:0;width:0;min-height:48px;height:48px;max-height:150px;resize:none;overflow-y:auto}
+.composer-row button{flex:0 0 112px;min-width:112px;min-height:46px}
+.bubble.assistant{white-space:normal;overflow-wrap:anywhere}
+.bubble.assistant p{margin:0 0 10px;white-space:pre-wrap}.bubble.assistant p:last-child{margin-bottom:0}
+.assistant-image{display:block;width:auto;max-width:min(100%,720px);max-height:480px;object-fit:contain;margin:14px 0;border:1px solid #245b7d;border-radius:16px;box-shadow:0 16px 38px #0006}
+@media(max-width:850px){.intelligence-workspace{height:calc(100dvh - 190px);min-height:430px}.chatpanel{min-height:0!important}.messages{min-height:0!important}}
+@media(max-width:520px){.intelligence-workspace{height:calc(100dvh - 190px);min-height:430px}.chatpanel{padding:8px 6px 0}.messages{padding:14px 10px}.composer{width:calc(100% - 12px);margin:0 auto 9px;padding:9px}.composer-row{flex-direction:row;gap:6px}.composer-row textarea{min-height:44px;height:44px}.composer-row button{flex:0 0 88px;min-width:88px;padding:10px 7px}.composer-top span:last-child,.composer-foot span:last-child{display:none}}
