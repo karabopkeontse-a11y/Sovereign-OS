@@ -1,0 +1,30 @@
+name: SovereignOS web build
+
+on:
+  push:
+    branches:
+      - feature/sovereign-2030-actualization
+  pull_request:
+    branches:
+      - feature/2030-intelligence-experience
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: clients/web
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: Build production frontend
+        run: npm run build
