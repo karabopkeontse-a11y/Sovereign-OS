@@ -36,3 +36,15 @@ The API refuses authenticated routes until `SOVEREIGN_API_TOKEN` is configured. 
 - External, financial, destructive and physical-device actions require explicit approval.
 - IoT sample telemetry is labelled simulation; physical commands are blocked until a trusted gateway exists.
 - Do not claim a web deployment or APK until its deployment/build workflow has succeeded.
+
+
+## Model provider pool
+
+The API router supports Groq, OpenRouter, Cloudflare Workers AI, Z.AI, SambaNova, NVIDIA NIM, local Ollama, and Mistral (explicit paid opt-in). Credentials remain in the API host environment.
+
+OpenRouter can expose multiple model candidates through one existing `OPENROUTER_API_KEY`. The default fallback pool includes:
+- `nvidia/nemotron-3.5-super-vl:free` for multimodal reasoning (text, images and video)
+- `nvidia/nemotron-3-ultra-550b-a55b:free` for long-context reasoning
+- `cohere/north-mini-code:free` for coding
+
+These are third-party free endpoints and can be rate-limited. Do not send confidential or sensitive workspace content to free endpoints unless their data terms are acceptable to you. Set `OPENROUTER_FALLBACK_MODELS` to a comma-separated list of model IDs to customise the pool. A single OpenRouter key is reused; no new paid provider is enabled by this setting.
