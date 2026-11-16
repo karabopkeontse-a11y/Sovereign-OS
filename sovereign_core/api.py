@@ -112,11 +112,12 @@ class SovereignAPI:
             db.commit()
         finally:
             db.close()
+        health = router.health_snapshot() if hasattr(router, "health_snapshot") else []
+        selected = next((item.get("model") for item in health if item.get("active")), None)
         return {"conversation_id": conversation_id, "workspace_id": workspace.id,
                 "reply": reply, "provider": provider, "model": model,
                 "fallback_used": used_index != getattr(router, "active_index", used_index),
-                "selected_model": (router.candidates[router.active_index].info.model
-                    if router.candidates else None)}
+                "selected_model": selected}
 
 def create_app(db_path=None, router=None, token=None):
     state = SovereignAPI(db_path or os.getenv("SOVEREIGN_DB_PATH",
