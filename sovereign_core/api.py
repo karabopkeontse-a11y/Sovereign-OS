@@ -118,7 +118,7 @@ class SovereignAPI:
             db.close()
         return {"conversation_id": conversation_id, "workspace_id": workspace.id,
                 "reply": reply, "provider": provider, "model": model,
-                "fallback_used": used_index != router.active_index,
+                "fallback_used": used_index != getattr(router, "active_index", used_index),
                 "selected_model": (router.candidates[router.active_index].info.model
                     if router.candidates else None)}
 
