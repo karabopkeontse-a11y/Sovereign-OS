@@ -7,7 +7,7 @@ from pathlib import Path
 from uuid import uuid4
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from .workspaces import WorkspaceService
 
 def now():
@@ -17,6 +17,17 @@ class ChatInput(BaseModel):
     message: str = Field(min_length=1, max_length=12000)
     conversation_id: str | None = None
     voice_mode: bool = False
+    images: list[str] = Field(default_factory=list, max_length=4)
+
+    @field_validator("images")
+    @classmethod
+    def validate_images(cls, values):
+        for value in values:
+            if not value.startswith(("data:image/png;base64,", "data:image/jpeg;base64,", "data:image/webp;base64,")):
+                raise ValueError("Images must be PNG, JPEG or WebP data URLs.")
+            if len(value) > 6 * 1024 * 1024:
+                raise ValueError("Each image must be 4 MB or smaller.")
+        return values
 
 class ModelSelectInput(BaseModel):
     provider: str = Field(min_length=1, max_length=80)
@@ -97,8 +108,17 @@ class SovereignAPI:
             for item in reversed(prior):
                 messages.append(HumanMessage(content=item["content"]) if item["role"] == "user"
                                 else AIMessage(content=item["content"]))
-            messages.append(HumanMessage(content=payload.message))
             router = self.get_router()
+            if payload.images:
+                selected = router.candidates[router.active_index] if router.candidates else None
+                selected_model = selected.info.model.casefold() if selected else ""
+                if not any(marker in selected_model for marker in ("vision", "-vl", ":vl")):
+                    raise HTTPException(409, "Image understanding needs an active vision model. Select OpenRouter Free · nvidia/nemotron-3.5-super-vl:free in Model health, then try again.")
+                content = [{"type": "text", "text": payload.message}]
+                content.extend({"type": "image_url", "image_url": {"url": image}} for image in payload.images)
+                messages.append(HumanMessage(content=content))
+            else:
+                messages.append(HumanMessage(content=payload.message))
             response, info, used_index = (router.invoke(messages, max_tokens=320) if payload.voice_mode else router.invoke(messages))
             reply = response.content if hasattr(response, "content") else str(response)
             provider, model = info.provider, info.model
@@ -108,7 +128,7 @@ class SovereignAPI:
         try:
             stamp = now()
             db.execute("INSERT INTO api_messages VALUES (?, ?, ?, ?, ?, ?, ?)",
-                       (str(uuid4()), conversation_id, "user", payload.message, None, None, stamp))
+                       (str(uuid4()), conversation_id, "user", payload.message + (" [Image attached]" if payload.images else ""), None, None, stamp))
             db.execute("INSERT INTO api_messages VALUES (?, ?, ?, ?, ?, ?, ?)",
                        (str(uuid4()), conversation_id, "assistant", reply, provider, model, stamp))
             db.execute("UPDATE api_conversations SET updated_at=? WHERE id=?", (stamp, conversation_id))
