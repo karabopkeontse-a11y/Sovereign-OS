@@ -15,6 +15,10 @@ class FakeRouter:
     def health_snapshot(self):
         return [{"provider":"Test","model":"fake","runtime":"cloud","status":"ready",
                  "cooldown_reason":"","failures":0,"successes":0}]
+    def select_model(self, provider, model):
+        if provider != "Test" or model != "fake":
+            raise ValueError("That model is not configured")
+        return {"provider": provider, "model": model, "runtime": "cloud", "active": True}
     def invoke(self, messages):
         class Reply:
             content = "Test response"
@@ -75,6 +79,11 @@ class SovereignAPITests(unittest.TestCase):
     def test_model_health_comes_from_router(self):
         data=self.client.get("/api/v1/models/health",headers=self.headers).json()
         self.assertEqual(data["providers"][0]["provider"],"Test")
+    def test_manual_model_selection_requires_configured_candidate(self):
+        ok=self.client.post("/api/v1/models/select",headers=self.headers,json={"provider":"Test","model":"fake"})
+        self.assertEqual(ok.status_code,200)
+        bad=self.client.post("/api/v1/models/select",headers=self.headers,json={"provider":"Other","model":"unknown"})
+        self.assertEqual(bad.status_code,409)
     def test_iot_data_is_marked_simulated(self):
         data=self.client.get("/api/v1/iot/devices",headers=self.headers).json()
         self.assertTrue(data["simulation"])

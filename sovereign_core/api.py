@@ -17,6 +17,10 @@ class ChatInput(BaseModel):
     message: str = Field(min_length=1, max_length=12000)
     conversation_id: str | None = None
 
+class ModelSelectInput(BaseModel):
+    provider: str = Field(min_length=1, max_length=80)
+    model: str = Field(min_length=1, max_length=160)
+
 class CommandInput(BaseModel):
     command: str = Field(min_length=1, max_length=120)
     parameters: dict = Field(default_factory=dict)
@@ -91,7 +95,8 @@ class SovereignAPI:
                 messages.append(HumanMessage(content=item["content"]) if item["role"] == "user"
                                 else AIMessage(content=item["content"]))
             messages.append(HumanMessage(content=payload.message))
-            response, info, _ = self.get_router().invoke(messages)
+            router = self.get_router()
+            response, info, used_index = router.invoke(messages)
             reply = response.content if hasattr(response, "content") else str(response)
             provider, model = info.provider, info.model
         except Exception as exc:
@@ -107,8 +112,12 @@ class SovereignAPI:
             db.commit()
         finally:
             db.close()
+        health = router.health_snapshot() if hasattr(router, "health_snapshot") else []
+        selected = next((item.get("model") for item in health if item.get("active")), None)
         return {"conversation_id": conversation_id, "workspace_id": workspace.id,
-                "reply": reply, "provider": provider, "model": model}
+                "reply": reply, "provider": provider, "model": model,
+                "fallback_used": used_index != getattr(router, "active_index", used_index),
+                "selected_model": selected}
 
 def create_app(db_path=None, router=None, token=None):
     state = SovereignAPI(db_path or os.getenv("SOVEREIGN_DB_PATH",
@@ -173,7 +182,18 @@ def create_app(db_path=None, router=None, token=None):
     def model_health():
         router_instance = state.get_router()
         return {"providers": router_instance.health_snapshot(),
-                "warnings": router_instance.configuration_warnings}
+                "warnings": router_instance.configuration_warnings,
+                "active_model": next(({"provider": p["provider"], "model": p["model"]}
+                    for p in router_instance.health_snapshot() if p.get("active")), None),
+                "configuration_mode": "backend-environment"}
+    @app.post("/api/v1/models/select", dependencies=[Depends(authorize)])
+    def select_model(payload: ModelSelectInput):
+        router_instance = state.get_router()
+        try:
+            selected = router_instance.select_model(payload.provider, payload.model)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc))
+        return {"selected": selected, "note": "Manual selection saved for this API session. Automatic fallback remains enabled."}
     @app.get("/api/v1/iot/devices", dependencies=[Depends(authorize)])
     def iot_devices():
         return {"simulation": True, "devices": [
