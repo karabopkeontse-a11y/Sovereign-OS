@@ -99,7 +99,7 @@ class SovereignAPI:
                                 else AIMessage(content=item["content"]))
             messages.append(HumanMessage(content=payload.message))
             router = self.get_router()
-            response, info, used_index = router.invoke(messages, max_tokens=320 if payload.voice_mode else None)
+            response, info, used_index = (router.invoke(messages, max_tokens=320) if payload.voice_mode else router.invoke(messages))
             reply = response.content if hasattr(response, "content") else str(response)
             provider, model = info.provider, info.model
         except Exception as exc:
