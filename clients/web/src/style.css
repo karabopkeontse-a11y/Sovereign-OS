@@ -204,3 +204,16 @@ body[data-core-state="speaking"] .orb-ring{border-color:#20cfff;filter:brightnes
 .call-shell[data-state="thinking"] .voice-orb{filter:drop-shadow(0 0 24px #ffbd4caa)}
 .call-shell[data-state="speaking"] .voice-orb{filter:drop-shadow(0 0 30px #20cfffdd)}
 .call-shell[data-state="error"] .voice-orb{filter:drop-shadow(0 0 18px #ff7d7d99)}
+
+
+/* 2030 orbital refinement: broken light-trail arcs with real front/back depth.
+   The centre stays completely open; the SO mark is never covered by a solid disc. */
+.hero .orb-wrap{perspective:1100px;isolation:isolate}
+.hero .orb{position:relative;z-index:2}
+.hero .orb-ring{position:absolute;width:340px;height:340px;inset:auto;border:0;border-radius:50%;background:none;box-shadow:none;pointer-events:none;z-index:auto;transform:none;animation:none}
+.hero .orb-ring::before,.hero .orb-ring::after{content:"";position:absolute;inset:0;border-radius:50%;background:conic-gradient(from 8deg,transparent 0deg 24deg,#ffca67 38deg,#e8a744 68deg,#26d9ef 112deg,#2387ff 158deg,transparent 184deg 224deg,#2387ff 250deg,#e9ad48 294deg,transparent 326deg 360deg);-webkit-mask:radial-gradient(ellipse,transparent 0 62%,#000 62.7% 63.5%,transparent 64.2%);mask:radial-gradient(ellipse,transparent 0 62%,#000 62.7% 63.5%,transparent 64.2%);transform:perspective(1000px) rotateX(68deg) rotateZ(-24deg);animation:soOrbitSpin 13s linear infinite;filter:drop-shadow(0 0 7px #20cfff88) drop-shadow(0 0 15px #e9ad4855)}
+.hero .orb-ring::before{z-index:1;clip-path:inset(0 0 50% 0);opacity:.55}
+.hero .orb-ring::after{z-index:3;clip-path:inset(50% 0 0 0);opacity:1;filter:drop-shadow(0 0 9px #20cfffbb) drop-shadow(0 0 18px #e9ad4877)}
+@keyframes soOrbitSpin{from{rotate:0deg}to{rotate:360deg}}
+@media(max-width:850px){.hero .orb-ring{width:280px;height:280px}}
+@media(max-width:520px){.hero .orb-ring{width:240px;height:240px}}
