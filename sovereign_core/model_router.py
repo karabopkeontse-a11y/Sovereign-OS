@@ -367,9 +367,11 @@ class ModelRouter:
                 failures.append(f"{candidate.info.label}: skipped: {reason}")
                 continue
             try:
-                model = candidate.client.bind(max_tokens=int(max_tokens)) if max_tokens is not None else candidate.client
+                model = candidate.client
                 if tools is not None:
                     model = model.bind_tools(tools)
+                if max_tokens is not None:
+                    model = model.bind(max_tokens=int(max_tokens))
                 result = model.invoke(messages)
                 provider = candidate.info.provider.casefold()
                 self._provider_successes[provider] = self._provider_successes.get(provider, 0) + 1
