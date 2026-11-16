@@ -21,10 +21,6 @@ class ModelSelectInput(BaseModel):
     provider: str = Field(min_length=1, max_length=80)
     model: str = Field(min_length=1, max_length=160)
 
-class ModelSelectInput(BaseModel):
-    provider: str = Field(min_length=1, max_length=80)
-    model: str = Field(min_length=1, max_length=160)
-
 class CommandInput(BaseModel):
     command: str = Field(min_length=1, max_length=120)
     parameters: dict = Field(default_factory=dict)
