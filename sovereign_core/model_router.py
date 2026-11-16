@@ -112,6 +112,20 @@ class ModelRouter:
         self._provider_failures: dict[str, int] = {}
         self._provider_successes: dict[str, int] = {}
         self.candidates = self._build_candidates()
+        self.active_index = 0
+
+    def select_model(self, provider: str, model: str) -> dict:
+        """Select an already configured candidate; never creates or bills a provider."""
+        for index, candidate in enumerate(self.candidates):
+            if (candidate.info.provider.casefold() == provider.casefold()
+                    and candidate.info.model.casefold() == model.casefold()):
+                eligible, reason = self._eligible(candidate)
+                if not eligible:
+                    raise ValueError(f"Model is cooling down: {reason}")
+                self.active_index = index
+                return {"provider": candidate.info.provider, "model": candidate.info.model,
+                        "runtime": candidate.info.runtime, "active": True}
+        raise ValueError("That model is not configured on this SovereignOS API instance.")
 
     def _openai_compatible(self, provider: str, key: str, model: str,
                            base_url: str, runtime: str = "cloud",
@@ -301,15 +315,18 @@ class ModelRouter:
             rows.append({
                 "provider": provider, "model": candidate.info.model,
                 "runtime": candidate.info.runtime,
-                "status": "ready" if eligible else "cooldown",
+                "status": ("cooldown" if not eligible else ("ready" if self._provider_successes.get(provider.casefold(), 0) else "connected")),
+                "active": self.candidates.index(candidate) == self.active_index,
                 "cooldown_reason": reason,
                 "failures": self._provider_failures.get(provider.casefold(), 0),
                 "successes": self._provider_successes.get(provider.casefold(), 0),
             })
         return rows
 
-    def invoke(self, messages, tools=None, start_index: int = 0):
-        """Invoke in order, skipping providers still cooling down."""
+    def invoke(self, messages, tools=None, start_index: int | None = None):
+        """Invoke from the manually selected model, then use configured fallbacks."""
+        if start_index is None:
+            start_index = self.active_index
         failures: list[str] = []
         if not self.candidates:
             details = " ".join(self.configuration_warnings)
