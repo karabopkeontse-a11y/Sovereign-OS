@@ -10,7 +10,46 @@ function view(name){document.querySelectorAll(".view").forEach(x=>x.classList.ad
 document.querySelectorAll(".nav").forEach(b=>b.onclick=()=>view(b.dataset.view));
 document.querySelectorAll("[data-go]").forEach(b=>b.onclick=()=>view(b.dataset.go));
 function renderWorkspaces(){const s=el("workspace");s.replaceChildren();workspaces.forEach(w=>{const o=document.createElement("option");o.value=w.id;o.textContent=w.name;s.append(o)});s.value=active;const w=workspaces.find(x=>x.id===active);el("active").textContent=w?.name||"Not connected";el("chat-title").textContent=w?.name==="SmartFlow BW"?"Thothi · SmartFlow BW":"SovereignOS · "+(w?.name||"Workspace");el("workspace-list").replaceChildren(...workspaces.map(w=>{const d=document.createElement("div");d.className="workspace-row";const b=document.createElement("b");b.textContent=w.name;const p=document.createElement("small");p.textContent=w.purpose;d.append(b,p);return d;}));}
-async function connect(){const button=el("save");setBusy(button,true,"Connecting…");el("settings-feedback").textContent="Checking API and authenticating…";try{const h=await fetch(base.replace(/\/$/,"")+"/api/v1/health");if(!h.ok)throw Error("API health check failed (HTTP "+h.status+")");const ws=await api("/api/v1/workspaces");workspaces=ws.workspaces;active=workspaces.some(w=>w.id===active)?active:(workspaces[0]?.id||"");renderWorkspaces();el("dot").classList.add("online");el("connection").textContent="API connected · checking models";el("connect").textContent="Connected ✓";el("footer").textContent="API connected";el("mode").textContent="LIVE API";el("settings-feedback").textContent="API authenticated successfully.";notice("SovereignOS API connected. Checking model readiness…");await Promise.all([models(),devices(),approvals(),conversations()]);el("connection").textContent=routerData?.providers?.length?"API connected · models configured":"API connected · no model configured";}catch(e){el("dot").classList.remove("online");el("connection").textContent="API disconnected";el("connect").textContent="Connect API";el("footer").textContent="Connection failed";el("mode").textContent="OFFLINE";el("settings-feedback").textContent=e.message;notice(e.message,"error");}finally{setBusy(button,false);}}
+async function connect(){
+ const button=el("save");
+ setBusy(button,true,"Connecting…");
+ el("settings-feedback").textContent="Checking API and authenticating…";
+ try{
+  if(!base||!token)throw Error("Enter the API URL and bearer token first.");
+  const h=await fetch(base.replace(/\/$/,"")+"/api/v1/health");
+  if(!h.ok)throw Error("API health check failed (HTTP "+h.status+")");
+  const ws=await api("/api/v1/workspaces");
+  workspaces=ws.workspaces;
+  active=workspaces.some(w=>w.id===active)?active:(workspaces[0]?.id||"");
+  renderWorkspaces();
+  el("dot").classList.add("online");
+  el("connection").textContent="API connected · loading services";
+  el("connect").textContent="API connected ✓";
+  el("footer").textContent="API authenticated";
+  el("mode").textContent="LIVE API";
+  el("settings-feedback").textContent="API authenticated successfully. Loading workspace services…";
+  notice("SovereignOS API authenticated. Loading workspace services…");
+  const results=await Promise.allSettled([models(),devices(),approvals(),conversations()]);
+  const failed=results.filter(x=>x.status==="rejected");
+  el("connection").textContent=routerData?.providers?.length?"API connected · models configured":"API connected · no model configured";
+  if(failed.length){
+   const msg=failed.length+" optional service panel(s) could not load. The API connection is still active.";
+   el("settings-feedback").textContent=msg;
+   notice(msg,"error");
+  }else{
+   el("settings-feedback").textContent="Connected. Workspace, models, devices and approvals loaded.";
+   notice("SovereignOS API connected. All panels loaded.");
+  }
+ }catch(e){
+  el("dot").classList.remove("online");
+  el("connection").textContent="API disconnected";
+  el("connect").textContent="Connect API";
+  el("footer").textContent="Connection failed";
+  el("mode").textContent="OFFLINE";
+  el("settings-feedback").textContent=e.message;
+  notice(e.message,"error");
+ }finally{setBusy(button,false);}
+}
 async function conversations(){const d=await api("/api/v1/workspaces/"+encodeURIComponent(active)+"/conversations");const box=el("messages");box.replaceChildren();if(!d.conversations.length){box.textContent="No conversations in this workspace yet. Start a new conversation below.";return;}d.conversations.forEach(c=>{const b=document.createElement("button");b.className="history-item";b.textContent=c.title;b.onclick=()=>{conversation=c.id;box.textContent="Loading conversation…";api("/api/v1/workspaces/"+encodeURIComponent(active)+"/conversations/"+encodeURIComponent(c.id)+"/messages").then(result=>{box.replaceChildren();result.messages.forEach(m=>addBubble(m.role,m.content));}).catch(err=>{box.textContent=err.message;});};box.append(b);});}
 async function models(){try{const d=await api("/api/v1/models/health");routerData=d;const list=el("model-list");list.replaceChildren();const configured=[...new Map(d.providers.map(p=>[p.provider,p])).values()];const ready=configured.filter(p=>p.status==="ready").length;const connected=configured.filter(p=>p.status==="connected").length;const activeModel=d.providers.find(p=>p.active);el("models-count").textContent=activeModel?"1 ACTIVE":"0 ACTIVE";el("overview-model-detail").textContent=activeModel?activeModel.provider+" · "+activeModel.model:configured.length+" connected · choose a model to activate";el("model-summary").textContent=(activeModel?"Active: "+activeModel.provider+" · "+activeModel.model:"No active selection")+" · "+ready+" ready · "+connected+" connected";el("model-badge").textContent=activeModel?activeModel.provider+" · "+activeModel.model:"SELECT A MODEL";el("model-ready-label").textContent=configured.length?configured.length+" provider"+(configured.length===1?"":"s")+" connected":"No model provider configured";el("model-ready-detail").textContent="Connected means credentials and a client are configured. Ready means a successful request has been completed in this API session.";el("router-state").textContent=configured.length?"ROUTING AVAILABLE":"AWAITING MODEL";el("router-state").className="status-tag "+(configured.length?"status-safe":"status-warn");const select=el("model-select");select.replaceChildren();d.providers.forEach(p=>{const o=document.createElement("option");o.value=JSON.stringify({provider:p.provider,model:p.model});o.textContent=p.provider+" · "+p.model+(p.active?" · ACTIVE":"");if(p.active)o.selected=true;select.append(o);});providers.forEach(n=>{const p=d.providers.find(x=>x.provider.toLowerCase().includes(n.toLowerCase().split(" ")[0]));const c=document.createElement("article");c.className="model-card "+(p?"model-ready":"model-off");const top=document.createElement("div");top.className="model-card-top";const b=document.createElement("b");b.textContent=n;const badge=document.createElement("span");badge.className="status-tag "+(p?.status==="ready"?"status-safe":p?.status==="connected"?"status-idle":p?.status==="cooldown"?"status-warn":"status-idle");badge.textContent=p?(p.status==="ready"?"READY":p.status==="connected"?"CONNECTED":"OFFLINE"):"OFFLINE";top.append(b,badge);const detail=document.createElement("p");detail.textContent=p?p.model+" · "+p.runtime:"Not configured on this API instance";const stats=document.createElement("div");stats.className="model-stats";stats.textContent=p?(p.successes+" successful · "+p.failures+" failed"+(p.active?" · active selection":"")):"Add credentials and model settings to the API environment, then restart it.";c.append(top,detail,stats);list.append(c);});el("model-activate").disabled=!d.providers.length;const warning=el("model-warnings");if(d.warnings?.length){warning.textContent=d.warnings.join(" ");warning.classList.remove("hidden");}else warning.classList.add("hidden");return d;}catch(e){notice("Could not read model health: "+e.message,"error");throw e;}}
 async function activateModel(){try{const choice=JSON.parse(el("model-select").value);await api("/api/v1/models/select",{method:"POST",body:JSON.stringify(choice)});await models();notice("Manual model selection updated: "+choice.provider+" · "+choice.model+".");}catch(e){notice("Model switch failed: "+e.message,"error");}}
@@ -19,7 +58,7 @@ async function approvals(){const d=await api("/api/v1/approvals");const count=d.
 function addBubble(role,text){const b=document.createElement("div");b.className="bubble "+(role==="user"?"user":"assistant");b.textContent=text;el("messages").append(b);el("messages").scrollTop=el("messages").scrollHeight;return b;}
 async function sendMessage(msg,{voice=false}={}){if(!active)throw Error("Choose a workspace first.");const d=await api("/api/v1/workspaces/"+encodeURIComponent(active)+"/chat",{method:"POST",body:JSON.stringify({message:msg,conversation_id:conversation})});conversation=d.conversation_id;el("model-badge").textContent=d.provider+" · "+d.model;if(d.fallback_used)notice("Model availability notice: "+(d.selected_model||"selected model")+" was unavailable or rate-limited. Sovereign switched to "+d.provider+" · "+d.model+" using your configured fallback order.","warning");if(voice){appendTranscript("SOVEREIGN",d.reply);speak(d.reply);}return d.reply;}
 el("workspace").onchange=async e=>{active=e.target.value;conversation=null;renderWorkspaces();try{await conversations();}catch(err){notice(err.message,"error");}};
-el("connect").onclick=()=>view("settings");
+el("connect").onclick=()=>{if(base&&token)connect();else view("settings");};
 el("save").onclick=async()=>{base=el("api-url").value.trim();token=el("api-token").value.trim();await connect();};
 el("model-activate").onclick=activateModel;
 el("refresh-models").onclick=async()=>{setBusy(el("refresh-models"),true,"Refreshing…");try{await models();notice("Model health refreshed.");}finally{setBusy(el("refresh-models"),false);}};
