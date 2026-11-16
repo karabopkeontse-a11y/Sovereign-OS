@@ -184,3 +184,23 @@ body[data-core-state="thinking"] .orb-ring{border-color:#ffbd4c;filter:brightnes
 body[data-core-state="speaking"] .orb-ring{border-color:#20cfff;filter:brightness(1.45)}
 @media(max-width:850px){.orb-wrap{min-width:0;height:270px}.orb{width:170px;height:170px}.orb img{width:155px;height:155px}.orb-ring{width:240px;height:125px}.chatpanel{height:auto;min-height:72vh}.messages{min-height:420px}}
 @media(max-width:520px){.orb-wrap{display:grid;height:230px;grid-row:1}.orb{width:145px;height:145px}.orb img{width:132px;height:132px}.orb-ring{width:210px;height:110px}.welcome-mark{width:78px;height:78px}.call-brand-mark{display:grid}.call-brand-mark img{width:44px;height:44px}}
+
+
+/* Orbital geometry: the ring is a visible tilted orbit around the SO core. */
+.hero .orb-wrap{perspective:900px;isolation:isolate}
+.hero .orb{z-index:2;position:relative}
+.hero .orb-ring{z-index:4;pointer-events:none;width:300px;height:156px;border:2px solid transparent;border-radius:50%;background:linear-gradient(#071629,#071629) padding-box,conic-gradient(from 15deg,#ffca67 0deg,#e6a43d 70deg,#23d8f0 150deg,#2387ff 225deg,#e8ad48 310deg,#ffca67 360deg) border-box;box-shadow:0 0 13px #26cfff66,0 0 28px #e9ad4b44;transform:perspective(900px) rotateX(67deg) rotateZ(-24deg);animation:soOrbitSpin 9s linear infinite}
+@keyframes soOrbitSpin{from{rotate:0deg}to{rotate:360deg}}
+.hero .orb-wrap>span{z-index:5}
+@media(max-width:850px){.hero .orb-ring{width:250px;height:132px}}
+@media(max-width:520px){.hero .orb-ring{width:218px;height:116px}}
+
+/* Keep the SO mark crisp while the voice core responds to actual call states. */
+.voice-orb{position:relative;z-index:2;transition:filter .25s ease,transform .25s ease}
+.voice-orb img{display:block;position:relative;z-index:2}
+.voice-ripple{z-index:1;pointer-events:none}
+.call-shell[data-state="connecting"] .voice-orb,
+.call-shell[data-state="listening"] .voice-orb{filter:drop-shadow(0 0 24px #20d9ffbb)}
+.call-shell[data-state="thinking"] .voice-orb{filter:drop-shadow(0 0 24px #ffbd4caa)}
+.call-shell[data-state="speaking"] .voice-orb{filter:drop-shadow(0 0 30px #20cfffdd)}
+.call-shell[data-state="error"] .voice-orb{filter:drop-shadow(0 0 18px #ff7d7d99)}
