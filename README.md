@@ -48,3 +48,10 @@ OpenRouter can expose multiple model candidates through one existing `OPENROUTER
 - `cohere/north-mini-code:free` for coding
 
 These are third-party free endpoints and can be rate-limited. Do not send confidential or sensitive workspace content to free endpoints unless their data terms are acceptable to you. Set `OPENROUTER_FALLBACK_MODELS` to a comma-separated list of model IDs to customise the pool. A single OpenRouter key is reused; no new paid provider is enabled by this setting.
+
+
+## Visual conversations and voice
+
+The web Intelligence composer accepts up to four PNG, JPEG or WebP images (4 MB each). Image understanding requires manually selecting the OpenRouter Free vision candidate `nvidia/nemotron-3.5-super-vl:free` in Model health. Image data is sent to that provider for the current request and is not stored as an image in the conversation database; the text history records that an image was attached. Do not send sensitive images to a third-party free endpoint.
+
+Call your AI remains a separate browser voice session with live recognition status, a call transcript, speech output and interruption. The current implementation uses browser speech recognition and speech synthesis with short voice-mode responses. It is not yet a PSTN telephone call or a low-latency full-duplex audio stream. Calling a deployed SovereignOS from a phone will require a secure public backend plus WebRTC or a telephony provider, authentication, session routing and abuse controls.
