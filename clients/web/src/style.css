@@ -315,3 +315,26 @@ body[data-core-state="speaking"] .orb-ring{border-color:#20cfff;filter:brightnes
 @media(max-width:520px){.attach-button{flex:0 0 38px!important;min-width:38px!important;width:38px;height:42px}.attachment-thumb{width:54px;height:54px}}
 
 .visual-privacy-note{display:block;width:min(calc(100% - 20px),780px);margin:0 auto 5px;color:#6f91ad;font-size:9px;line-height:1.45}
+
+
+/* Final call-screen usability pass: visible text chat, clean floating monogram, no tile. */
+.voice-orb,
+.voice-orb img{background:transparent!important;border:0!important;border-radius:50%!important;box-shadow:none!important}
+.voice-orb{width:124px!important;height:124px!important;overflow:visible!important}
+.voice-orb img{width:124px!important;height:124px!important;object-fit:contain;filter:drop-shadow(0 0 18px #25cfff99)!important}
+.voice-orb:before,.voice-orb:after{content:none!important}
+.voice-orb-wrap{height:190px!important;margin:0 auto 4px!important}
+.call-shell{min-height:0!important;padding:22px clamp(16px,3vw,38px)!important}
+.call-shell h2{margin:10px 0 5px!important;font-size:clamp(24px,3vw,34px)!important}
+.call-shell #call-description{margin:0 auto 12px!important;max-width:680px}
+.call-controls{margin:10px 0 12px!important}
+.call-transcript{max-height:132px;min-height:52px;overflow-y:auto;padding:10px 14px;margin:0 auto 10px;width:min(760px,100%)}
+.call-text-composer{width:min(760px,100%);margin:0 auto 10px;display:flex;align-items:center;gap:9px;padding:8px 10px;border:1px solid #2377a5;border-radius:16px;background:linear-gradient(145deg,#0b2037f5,#061326f8);box-shadow:0 12px 32px #0006}
+.call-text-composer:focus-within{border-color:#31c9ed;box-shadow:0 0 0 3px #20cfff16,0 12px 32px #0006}
+.call-text-composer textarea{flex:1 1 auto;min-width:0;min-height:42px;max-height:132px;resize:none;padding:10px 8px;color:#f1fbff;font:inherit;font-size:14px;line-height:1.5;background:transparent;border:0;outline:0;box-shadow:none}
+.call-text-composer textarea::placeholder{color:#7898b5}
+.call-text-composer button.primary{flex:0 0 94px;min-height:42px;padding:9px 12px;border-radius:12px}
+.call-attach{flex:0 0 40px;width:40px;height:40px;border-radius:12px;border:1px solid #286c94;background:#0b2c49;color:#9beaff;font-size:22px}
+.call-footnote{display:block;max-width:760px;margin:4px auto 0;font-size:9px;line-height:1.45}
+@media(max-width:850px){.voice-orb-wrap{height:170px!important}.call-transcript{max-height:112px}}
+@media(max-width:520px){.call-shell{padding:16px 10px!important}.voice-orb-wrap{height:150px!important}.voice-orb,.voice-orb img{width:104px!important;height:104px!important}.call-text-composer{gap:5px;padding:6px}.call-text-composer button.primary{flex-basis:76px;padding:8px 7px}.call-attach{flex-basis:36px;width:36px;height:38px}.call-transcript{max-height:105px}}
