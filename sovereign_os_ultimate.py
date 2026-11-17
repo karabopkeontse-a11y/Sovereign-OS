@@ -129,6 +129,9 @@ MEMORY_STORE = WORKSPACE_SERVICE.memory  # retained for legacy vault operations
 CHAT_HISTORY_DIR = WORKSPACE_DIR / "chat_history"
 CHAT_HISTORY_DIR.mkdir(exist_ok=True)
 app.add_static_files("/workspace-files", str(WORKSPACE_DIR))  # lets the modal show/download images & videos directly
+# The desktop, web and Android shells share this exact approved SO SVG asset.
+MASTER_BRAND_ASSET = BASE_DIR / "clients" / "web" / "public"
+app.add_static_files("/sovereign-assets", str(MASTER_BRAND_ASSET))
 
 # Deliberately a small, named allow-list rather than an arbitrary path the model could
 # pick — "save it to my Desktop" works, but nothing can write to arbitrary system paths.
@@ -1217,18 +1220,16 @@ document.addEventListener('drop', function (e) {
 """
 
 AVATAR_HTML = """
-<div class="avatar-stage">
-  <div id="avatar" class="avatar avatar-idle">
+<div class="avatar-stage sovereign-core-stage">
+  <div id="avatar" class="avatar avatar-idle sovereign-core-avatar">
     <div class="avatar-glow"></div>
+    <div class="sovereign-core-orbit sovereign-core-orbit-back"></div>
+    <div class="sovereign-core-orbit sovereign-core-orbit-front"></div>
+    <img class="sovereign-master-mark" src="/sovereign-assets/sovereign-os-mark.svg"
+         alt="SovereignOS official SO orbital emblem">
     <div class="avatar-thinking-dots"><span></span><span></span><span></span></div>
-    <div class="avatar-head">
-      <div class="avatar-eye avatar-eye-left"><div class="avatar-eye-shine"></div></div>
-      <div class="avatar-eye avatar-eye-right"><div class="avatar-eye-shine"></div></div>
-      <div class="avatar-blush avatar-blush-left"></div>
-      <div class="avatar-blush avatar-blush-right"></div>
-      <div class="avatar-mouth"></div>
-    </div>
   </div>
+  <div class="sovereign-core-caption">SOVEREIGN CORE <span>● ONLINE</span></div>
 </div>
 """
 
@@ -1281,7 +1282,7 @@ def main_page():
 
     # ---- Header --------------------------------------------------------
     with ui.row().classes("app-header w-full"):
-        ui.html('<span class="app-title">SOVEREIGN <span class="app-title-accent">OS</span></span>')
+        ui.html('<span class="desktop-brand"><img class="desktop-brand-mark" src="/sovereign-assets/sovereign-os-mark.svg" alt="SovereignOS official SO orbital emblem"><span class="app-title">SOVEREIGN <span class="app-title-accent">OS</span><small>2050 INTELLIGENCE ENVIRONMENT</small></span></span>')
         ui.html('<span id="status-indicator" class="status-indicator">🟢 Online</span>')
         initial_model = MODEL_ROUTER.candidates[0].info.label if MODEL_ROUTER.candidates else "No provider configured"
         model_indicator = ui.label(f"Ready: {initial_model}").classes("files-empty")
@@ -1720,6 +1721,48 @@ def main_page():
     send_button.on_click(lambda: send_message())
     message_input.on("keydown.enter", lambda: send_message())
     mic_button.on_click(on_mic_click)
+
+    # ---- 2050 desktop command dock + keyboard command palette -------------
+    with ui.dialog() as command_dialog, ui.card().classes("glass-modal sovereign-command-palette"):
+        ui.label("Sovereign command").classes("modal-title")
+        ui.label("A single command surface for your workspace.").classes("files-empty")
+        command_search = ui.input(placeholder="Search commands…").props("outlined dense dark").classes("w-full")
+        command_results = ui.column().classes("w-full")
+        desktop_commands = [
+            ("Open Intelligence", "Focus the message composer", lambda: message_input.run_method("focus")),
+            ("Start voice capture", "Use the desktop microphone", lambda: on_mic_click()),
+            ("Open Memory Vault", "Inspect workspace-scoped memory", lambda: open_memory_panel()),
+            ("Model health", "Inspect configured providers and routing", lambda: open_model_health()),
+            ("Recent files", "Jump to the file workspace", lambda: client.run_javascript("document.querySelector('.files-panel')?.scrollIntoView({behavior:'smooth',block:'center'})")),
+            ("Stop speech", "Interrupt spoken output", lambda: stop_speech()),
+            ("Clear conversation", "Clear the current workspace conversation", lambda: clear_chat()),
+        ]
+
+        def render_desktop_commands(query: str = ""):
+            command_results.clear()
+            needle = (query or "").strip().casefold()
+            matches = [item for item in desktop_commands
+                       if needle in item[0].casefold() or needle in item[1].casefold()]
+            with command_results:
+                if not matches:
+                    ui.label("No matching commands.").classes("files-empty")
+                for title, description, action in matches:
+                    with ui.row().classes("desktop-command-row w-full"):
+                        ui.button(title, on_click=lambda fn=action: (command_dialog.close(), fn())).props("flat").classes("desktop-command-action")
+                        ui.label(description).classes("files-empty")
+
+        command_search.on_value_change(lambda e: render_desktop_commands(e.value))
+        render_desktop_commands()
+
+    with ui.row().classes("sovereign-desktop-dock"):
+        ui.button("Intelligence", icon="forum", on_click=lambda: message_input.run_method("focus")).props("flat")
+        ui.button("Voice", icon="graphic_eq", on_click=on_mic_click).props("flat")
+        ui.button("Files", icon="folder_open", on_click=lambda: client.run_javascript("document.querySelector('.files-panel')?.scrollIntoView({behavior:'smooth',block:'center'})")).props("flat")
+        ui.button("Memory", icon="psychology", on_click=open_memory_panel).props("flat")
+        ui.button("Models", icon="monitor_heart", on_click=open_model_health).props("flat")
+        ui.button("⌘ K", on_click=command_dialog.open).props("id=desktop-command flat")
+        ui.html('<span class="desktop-system-clock" id="desktop-system-clock">LOCAL SYSTEM · --:--:--</span>')
+    client.run_javascript("if(!window.sovereignDesktopClock){window.sovereignDesktopClock=setInterval(()=>{const n=document.getElementById('desktop-system-clock');if(n)n.textContent='LOCAL SYSTEM · '+new Intl.DateTimeFormat(undefined,{hour:'2-digit',minute:'2-digit',second:'2-digit'}).format(new Date());},1000);document.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='k'){e.preventDefault();document.getElementById('desktop-command')?.click();}});}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
