@@ -66,6 +66,8 @@ import asyncio
 import threading
 import socket
 import secrets
+import shutil
+import subprocess
 import tempfile
 import urllib.parse
 import urllib.request
@@ -1407,6 +1409,9 @@ ui.add_head_html(HEAD_HTML, shared=True)
 
 @ui.page("/")
 def main_page():
+    # Compatibility entry point: always open the single, upgraded Vite client.
+    ui.run_javascript("window.location.replace('http://127.0.0.1:5173/')")
+    return
     client = ui.context.client
     default_workspace = next((w for w in WORKSPACES if w.name == "SovereignOS"), WORKSPACES[0])
     state = {
@@ -1936,6 +1941,48 @@ def main_page():
 # ENTRYPOINT
 # ─────────────────────────────────────────────────────────────────────────────
 
+def start_web_client():
+    """Start or reuse the single Vite interface used by every desktop entry point."""
+    web_dir = BASE_DIR / "clients" / "web"
+    if not (web_dir / "package.json").is_file():
+        raise RuntimeError("SovereignOS web client is missing from clients/web.")
+
+    def ready():
+        try:
+            with urllib.request.urlopen("http://127.0.0.1:5173/", timeout=2) as response:
+                page = response.read(20000).decode("utf-8", errors="replace")
+                return response.status == 200 and "SovereignOS" in page
+        except Exception:
+            return False
+
+    if ready():
+        print("SovereignOS unified interface already running at http://127.0.0.1:5173/.")
+        return None
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        probe.bind(("127.0.0.1", 5173))
+    except OSError as exc:
+        raise RuntimeError("Port 5173 is occupied by a service that is not the SovereignOS web client.") from exc
+    finally:
+        probe.close()
+    npm = shutil.which("npm.cmd") or shutil.which("npm")
+    if not npm:
+        raise RuntimeError("Node.js/npm is required to launch SovereignOS. Install Node.js once, then relaunch.")
+    process = subprocess.Popen(
+        [npm, "run", "dev", "--", "--host", "127.0.0.1", "--port", "5173", "--strictPort"],
+        cwd=str(web_dir), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline:
+        if ready():
+            print("SovereignOS unified interface ready at http://127.0.0.1:5173/.")
+            return process
+        if process.poll() is not None:
+            raise RuntimeError("Vite stopped during startup. Run npm install inside clients/web, then relaunch.")
+        time.sleep(0.25)
+    raise RuntimeError("SovereignOS web interface did not become ready on port 5173.")
+
 def start_embedded_api():
     """Start the authenticated REST API beside the desktop, sharing its live model router."""
     try:
@@ -1983,6 +2030,7 @@ def start_embedded_api():
 
 
 if __name__ in {"__main__", "__mp_main__"}:
+    web_client_process = start_web_client()
     embedded_api = start_embedded_api()
     if not MODEL_ROUTER.candidates:
         print("WARNING: No model configured. Add GROQ_API_KEY, OPENROUTER_API_KEY, or configure OLLAMA_MODEL.")
