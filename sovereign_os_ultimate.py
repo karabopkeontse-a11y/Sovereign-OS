@@ -1838,7 +1838,7 @@ def main_page():
         command_results = ui.column().classes("w-full")
         desktop_commands = [
             ("Open Intelligence", "Focus the message composer", lambda: message_input.run_method("focus")),
-            ("Switch workspace", "Choose a different isolated workspace", lambda: workspace_select.run_method("focus")),
+            ("Switch workspace", "Open the isolated workspace selector", lambda: workspace_select.run_method("showPopup")),
             ("Start voice capture", "Use the desktop microphone", lambda: on_mic_click()),
             ("Open Memory Vault", "Inspect workspace-scoped memory", lambda: open_memory_panel()),
             ("Model health", "Inspect configured providers and routing", lambda: open_model_health()),
