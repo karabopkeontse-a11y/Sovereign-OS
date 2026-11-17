@@ -388,3 +388,15 @@ body[data-core-state="speaking"] .orb-ring{border-color:#20cfff;filter:brightnes
 .conversation-history-rail .history-item{width:auto;white-space:nowrap;padding:7px 11px;border:1px solid #30445f;border-radius:20px}
 .conversation-history-rail .history-active{border-color:#6bd8dc;background:#15374b}
 @media(max-width:600px){.specialist-list{grid-template-columns:1fr}}
+
+
+/* Composer repair: stable compact input with a real editable surface. */
+#view-chat .chatpanel{min-height:0!important;min-width:0}
+#view-chat .composer{flex:0 0 auto;min-width:0;max-height:none;overflow:visible}
+#view-chat .composer-row{display:flex!important;flex-direction:row!important;align-items:flex-end!important;gap:9px!important;min-width:0}
+#view-chat .composer-row textarea#message{display:block;flex:1 1 auto!important;width:auto!important;min-width:0!important;height:54px!important;min-height:54px!important;max-height:160px!important;padding:13px 12px!important;resize:none!important;overflow-y:auto!important;line-height:1.45!important;box-sizing:border-box!important;border:1px solid #234765!important;border-radius:12px!important;background:#071426!important;color:#f1fbff!important}
+#view-chat .composer-row textarea#message:focus{border-color:#31c9ed!important;box-shadow:0 0 0 2px #20cfff18!important}
+#view-chat .composer-row #attach-image{flex:0 0 42px!important;min-width:42px!important;width:42px!important;height:46px!important}
+#view-chat .composer-row #send-button{flex:0 0 104px!important;min-width:104px!important;height:46px!important;min-height:46px!important}
+#view-chat .visual-privacy-note{display:block;margin:5px 2px 3px;color:#9bb4ca;font-size:10px;line-height:1.45}
+@media(max-width:520px){#view-chat .composer-row{flex-direction:row!important}#view-chat .composer-row #send-button{flex-basis:76px!important;min-width:76px!important}#view-chat .composer-row textarea#message{height:48px!important;min-height:48px!important}}
