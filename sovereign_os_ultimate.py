@@ -1057,6 +1057,113 @@ body {
 
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 8px; }
+
+/* ── SovereignOS 2050 desktop shell ─────────────────────────────────────── */
+:root{
+  --bg:#030918;--panel:rgba(8,25,48,.78);--panel-border:rgba(53,170,224,.22);
+  --accent-gold:#e6b85c;--accent-teal:#28d5ee;--accent-rose:#ef718b;
+  --text:#edf7ff;--text-muted:#8da9c5;
+}
+body{
+  background:
+    radial-gradient(ellipse at 50% -18%,rgba(15,102,173,.26),transparent 52%),
+    radial-gradient(ellipse at 100% 100%,rgba(16,67,119,.16),transparent 42%),
+    #030918!important;
+  color:var(--text);
+}
+.app-header{
+  position:sticky;top:0;z-index:30;padding:12px 24px;
+  background:rgba(3,9,24,.86);border-bottom:1px solid rgba(39,155,207,.24);
+  backdrop-filter:blur(22px);-webkit-backdrop-filter:blur(22px);
+  box-shadow:0 10px 36px rgba(0,0,0,.22);
+}
+.desktop-brand{display:flex;align-items:center;gap:12px;min-width:220px}
+.desktop-brand-mark{width:48px;height:38px;object-fit:contain;filter:drop-shadow(0 0 12px #1caeff77)}
+.app-title{display:flex;flex-direction:column;line-height:1.05;font-size:17px;letter-spacing:.12em}
+.app-title-accent{color:#b6eaff}
+.app-title small{margin-top:5px;color:#7298ba;font-size:8px;letter-spacing:.22em}
+.status-indicator{color:#a9f5e6;border-color:#1a816f;background:#062a2a66}
+.app-body{padding:22px 22px 100px;gap:20px;min-height:calc(100vh - 72px)}
+.glass-panel{
+  background:linear-gradient(145deg,rgba(10,31,57,.88),rgba(5,17,34,.86));
+  border-color:rgba(39,151,203,.28);border-radius:20px;
+  box-shadow:0 18px 54px rgba(0,0,0,.3),inset 0 1px rgba(255,255,255,.035);
+}
+.chat-panel{height:calc(100vh - 170px);min-height:440px}
+.chat-input-row{padding:10px;border:1px solid rgba(45,168,220,.32);border-radius:17px;background:rgba(5,22,42,.86)}
+.chat-input,.chat-input .q-field__control{background:transparent!important}
+.icon-button{background:linear-gradient(135deg,#087ee7,#21cce6)!important;color:#021326!important;border-radius:13px!important}
+.files-panel{border:1px solid rgba(39,151,203,.28)}
+.avatar-stage.sovereign-core-stage{height:214px;display:flex;flex-direction:column;gap:4px}
+.sovereign-core-avatar{
+  width:166px;height:166px;display:grid;place-items:center;isolation:isolate;
+  animation:sovereign-core-float 5s ease-in-out infinite;
+}
+.sovereign-master-mark{
+  position:relative;z-index:3;width:132px;height:100px;object-fit:contain;
+  background:transparent;border:0;box-shadow:none;
+  filter:drop-shadow(0 0 15px rgba(31,181,255,.45));
+}
+.sovereign-core-avatar .avatar-glow{
+  z-index:0;inset:4px;border-radius:50%;
+  background:radial-gradient(circle,rgba(20,157,235,.32),rgba(10,71,126,.1) 48%,transparent 72%);
+  filter:blur(8px);
+}
+.sovereign-core-orbit{
+  position:absolute;z-index:1;left:50%;top:50%;width:154px;height:154px;
+  border:1px solid rgba(42,190,235,.25);border-radius:50%;
+  transform:translate(-50%,-50%);box-shadow:0 0 26px rgba(12,151,220,.12),inset 0 0 20px rgba(12,151,220,.08);
+}
+.sovereign-core-orbit-back{width:190px;height:190px;border-color:rgba(36,145,207,.18)}
+.sovereign-core-orbit-front{width:126px;height:126px;border-color:rgba(50,206,240,.34);border-top-color:rgba(230,184,92,.7);animation:sovereign-orbit-spin 18s linear infinite}
+.sovereign-core-caption{font-size:9px;letter-spacing:.22em;color:#83a9c9}
+.sovereign-core-caption span{color:#4be0c0;margin-left:8px}
+.avatar-listening .sovereign-master-mark{filter:drop-shadow(0 0 22px #25d8f4)!important}
+.avatar-listening .sovereign-core-orbit-front{border-top-color:#4de4f2;animation-duration:4s}
+.avatar-thinking .sovereign-core-orbit-front{border-top-color:#f0c477;animation-duration:2.4s}
+.avatar-talking .sovereign-master-mark{filter:drop-shadow(0 0 25px #1c9dff)!important}
+.avatar-talking .sovereign-core-orbit-back{animation:sovereign-orbit-pulse 1.1s ease-in-out infinite}
+@keyframes sovereign-core-float{0%,100%{transform:translateY(0)}50%{transform:translateY(-5px)}}
+@keyframes sovereign-orbit-spin{to{transform:translate(-50%,-50%) rotate(360deg)}}
+@keyframes sovereign-orbit-pulse{0%,100%{opacity:.55;transform:translate(-50%,-50%) scale(.96)}50%{opacity:1;transform:translate(-50%,-50%) scale(1.06)}}
+.sovereign-desktop-dock{
+  position:fixed!important;z-index:1000;left:50%;bottom:16px;transform:translateX(-50%);
+  width:max-content;max-width:calc(100vw - 28px);display:flex;align-items:center;justify-content:center;
+  gap:5px;padding:8px 10px;border:1px solid rgba(61,178,226,.34);border-radius:20px;
+  background:linear-gradient(135deg,rgba(7,28,52,.94),rgba(4,14,30,.94));
+  box-shadow:0 18px 54px rgba(0,0,0,.52),0 0 28px rgba(18,147,220,.12);
+  backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);
+}
+.sovereign-desktop-dock .q-btn{min-height:42px;border-radius:13px;color:#c6eaff!important;padding:0 12px}
+.sovereign-desktop-dock .q-btn:hover{background:rgba(25,148,217,.18)!important;color:#fff!important}
+.sovereign-desktop-dock .q-icon{color:#48d3ed}
+.desktop-system-clock{padding:0 10px;border-left:1px solid rgba(80,158,199,.25);color:#86a8c5;font:9px 'IBM Plex Sans',sans-serif;letter-spacing:.12em;white-space:nowrap}
+.sovereign-command-palette{min-width:min(620px,92vw)!important;max-width:620px!important;padding:22px!important;border:1px solid rgba(47,177,227,.4)!important;background:rgba(4,17,35,.96)!important}
+.desktop-command-row{align-items:center;gap:12px;padding:4px 0;border-bottom:1px solid rgba(75,139,177,.13)}
+.desktop-command-action{min-width:190px;justify-content:flex-start;color:#d7f2ff!important}
+.desktop-command-row .files-empty{padding:0}
+@media(max-width:900px){
+ .app-body{flex-wrap:wrap!important;padding:14px 12px 90px}
+ .chat-panel{height:auto;min-height:58vh;min-width:0;width:100%}
+ .side-panel{min-width:0;width:100%}
+ .sovereign-desktop-dock{bottom:8px;gap:0;padding:6px}
+ .sovereign-desktop-dock .q-btn{min-width:42px;padding:0 8px}
+ .desktop-system-clock{display:none}
+}
+@media(max-width:560px){
+ .app-header{padding:10px 12px;gap:8px;flex-wrap:wrap}
+ .desktop-brand{min-width:0}
+ .desktop-brand-mark{width:40px;height:32px}
+ .app-title{font-size:14px}
+ .app-title small{font-size:7px}
+ .sovereign-desktop-dock .q-btn{font-size:10px;padding:0 5px}
+ .sovereign-desktop-dock .q-btn .q-icon{font-size:17px}
+ .sovereign-command-palette{min-width:92vw!important}
+}
+@media(prefers-reduced-motion:reduce){
+ .sovereign-core-avatar,.sovereign-core-orbit{animation:none!important}
+}
+
 </style>
 
 <div id="toast-container" class="toast-container"></div>
