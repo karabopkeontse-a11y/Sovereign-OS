@@ -1,0 +1,3 @@
+# Optional native desktop window support for the existing NiceGUI desktop client.
+# The application automatically falls back to the local browser if this is absent.
+pywebview>=5,<7

@@ -1,0 +1,65 @@
+name: SovereignOS platform validation
+
+on:
+  push:
+    branches:
+      - feature/sovereign-2030-actualization
+  pull_request:
+    branches:
+      - feature/2030-intelligence-experience
+
+permissions:
+  contents: read
+
+jobs:
+  web-build:
+    name: Web and PWA build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: clients/web
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install web dependencies
+        run: npm install --no-audit --no-fund
+      - name: Run frontend tests
+        run: npm test
+      - name: Build production frontend
+        run: npm run build
+
+  api-tests:
+    name: API and workspace regression tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install API dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-api.txt
+      - name: Run API, model router and workspace tests
+        run: python -m unittest discover -s tests -v
+
+  desktop-check:
+    name: Windows desktop shell static validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Compile desktop application
+        run: python -m py_compile sovereign_os_ultimate.py
+      - name: Verify shared SO brand asset and desktop shell
+        run: python -m unittest discover -s tests -p 'test_desktop_shell.py' -v

@@ -2,13 +2,26 @@
 
 SovereignOS is the shared intelligence and execution core for separate workspaces and client surfaces. Thothi is the SmartFlow BW-facing assistant powered by this core; NCS and Yard Truths retain separate workspace context.
 
-## Existing desktop application
+## 2050 desktop shell
 
-Run the Windows desktop/NiceGUI client with Python 3.11 and the project's existing dependencies:
+The existing NiceGUI desktop client now supports an optional native application window. Its command dock, command palette (`Ctrl+K`), workspace switcher, Memory Vault, Recent Files and Model Health remain part of the same SovereignOS core.
 
-```bat
+Install the optional native-window bridge once:
+
+```powershell
+py -3.11 -m pip install -r requirements-desktop-native.txt
+```
+
+Launch the desktop client:
+
+```powershell
+$env:SOVEREIGN_NATIVE_WINDOW = "auto"
 py -3.11 sovereign_os_ultimate.py
 ```
+
+`auto` opens a native PyWebView window when the bridge is installed and otherwise safely falls back to the local browser. Set `SOVEREIGN_NATIVE_WINDOW=false` to force browser mode. Native mode uses the platform webview engine; Windows and Linux machines must have a compatible runtime installed.
+
+The desktop header and core orb both load `clients/web/public/sovereign-os-mark.svg` directly. The web/PWA surfaces reference that same master asset; do not redraw or replace it with platform-specific variants. Package icons may be raster exports of the same SVG, never a different monogram.
 
 ## New REST API and web client
 
@@ -18,6 +31,13 @@ Install API dependencies:
 
 ```bat
 py -3.11 -m pip install -r requirements-api.txt
+```
+
+Configure at least one model provider locally. Copy `.env.template` to `.env`, then add your own `GROQ_API_KEY` or `OPENROUTER_API_KEY`. The API loads `.env` and `.env.local` from the repository root without overriding environment variables already set by Windows. These files are excluded from Git; never commit provider keys.
+
+```powershell
+Copy-Item .env.template .env
+notepad .env
 ```
 
 Set a private random bearer token in your local environment file, then start the API:
@@ -36,3 +56,22 @@ The API refuses authenticated routes until `SOVEREIGN_API_TOKEN` is configured. 
 - External, financial, destructive and physical-device actions require explicit approval.
 - IoT sample telemetry is labelled simulation; physical commands are blocked until a trusted gateway exists.
 - Do not claim a web deployment or APK until its deployment/build workflow has succeeded.
+
+
+## Model provider pool
+
+The API router supports Groq, OpenRouter, Cloudflare Workers AI, Z.AI, SambaNova, NVIDIA NIM, local Ollama, and Mistral (explicit paid opt-in). Credentials remain in the API host environment.
+
+OpenRouter can expose multiple model candidates through one existing `OPENROUTER_API_KEY`. The default fallback pool includes:
+- `nvidia/nemotron-3.5-super-vl:free` for multimodal reasoning (text, images and video)
+- `nvidia/nemotron-3-ultra-550b-a55b:free` for long-context reasoning
+- `cohere/north-mini-code:free` for coding
+
+These are third-party free endpoints and can be rate-limited. Do not send confidential or sensitive workspace content to free endpoints unless their data terms are acceptable to you. Set `OPENROUTER_FALLBACK_MODELS` to a comma-separated list of model IDs to customise the pool. A single OpenRouter key is reused; no new paid provider is enabled by this setting.
+
+
+## Visual conversations and voice
+
+The web Intelligence composer accepts up to four PNG, JPEG or WebP images (4 MB each). Image understanding requires manually selecting the OpenRouter Free vision candidate `nvidia/nemotron-3.5-super-vl:free` in Model health. Image data is sent to that provider for the current request and is not stored as an image in the conversation database; the text history records that an image was attached. Do not send sensitive images to a third-party free endpoint.
+
+Call your AI remains a separate browser voice session with live recognition status, a call transcript, speech output and interruption. The current implementation uses browser speech recognition and speech synthesis with short voice-mode responses. It is not yet a PSTN telephone call or a low-latency full-duplex audio stream. Calling a deployed SovereignOS from a phone will require a secure public backend plus WebRTC or a telephony provider, authentication, session routing and abuse controls.

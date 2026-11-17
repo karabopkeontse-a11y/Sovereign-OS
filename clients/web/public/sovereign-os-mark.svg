@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">SovereignOS official SO monogram</title>
+  <desc id="desc">A luminous metallic blue S with a bold circular O layered in front on the right. The O visibly overlaps the S. This is the platform-independent SovereignOS master mark.</desc>
+  <defs>
+    <linearGradient id="so-blue" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#8ceeff"/>
+      <stop offset=".24" stop-color="#24c9ff"/>
+      <stop offset=".58" stop-color="#0877df"/>
+      <stop offset="1" stop-color="#123b9b"/>
+    </linearGradient>
+    <linearGradient id="so-edge" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#d1fbff" stop-opacity=".95"/>
+      <stop offset=".45" stop-color="#58cfff" stop-opacity=".5"/>
+      <stop offset="1" stop-color="#082c78" stop-opacity=".95"/>
+    </linearGradient>
+    <radialGradient id="so-face" cx=".28" cy=".18" r=".9">
+      <stop offset="0" stop-color="#70eaff"/>
+      <stop offset=".42" stop-color="#159fe9"/>
+      <stop offset="1" stop-color="#123c9d"/>
+    </radialGradient>
+    <filter id="so-glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="7" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <g filter="url(#so-glow)">
+    <!-- S sits behind the O; rounded terminals reproduce the adopted app mark. -->
+    <path d="M224 151 C197 133 165 128 135 135 C82 147 63 184 72 218 C80 248 111 259 153 270 C190 280 211 289 210 316 C209 342 184 359 151 360 C118 361 91 348 68 331"
+      fill="none" stroke="#082c78" stroke-width="105" stroke-linecap="round" stroke-linejoin="round" opacity=".55" transform="translate(0 5)"/>
+    <path d="M224 151 C197 133 165 128 135 135 C82 147 63 184 72 218 C80 248 111 259 153 270 C190 280 211 289 210 316 C209 342 184 359 151 360 C118 361 91 348 68 331"
+      fill="none" stroke="url(#so-blue)" stroke-width="94" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M224 151 C197 133 165 128 135 135 C82 147 63 184 72 218 C80 248 111 259 153 270 C190 280 211 289 210 316 C209 342 184 359 151 360 C118 361 91 348 68 331"
+      fill="none" stroke="url(#so-edge)" stroke-width="5" stroke-linecap="round" opacity=".8"/>
+    <!-- O is deliberately rendered second so it sits IN FRONT of the S. -->
+    <circle cx="329" cy="250" r="113" fill="#082c78" opacity=".65" transform="translate(0 5)"/>
+    <circle cx="329" cy="250" r="113" fill="none" stroke="#082c78" stroke-width="93"/>
+    <circle cx="329" cy="250" r="113" fill="none" stroke="url(#so-blue)" stroke-width="84"/>
+    <circle cx="329" cy="250" r="113" fill="none" stroke="url(#so-edge)" stroke-width="5" opacity=".9"/>
+  </g>
+</svg>

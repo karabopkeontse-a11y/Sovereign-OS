@@ -10,7 +10,7 @@ WHAT THIS FILE FIXES (see the numbered sections below):
   4. Clickable Recent Files -> glass-morphism modal (Refine with AI / Download / Close),
      now rendering images/video/docx/pdf, not just plain text
   5. Instant vanilla-JS drag & drop media preview, auto-fit + double-click full view
-  6. Real window controls via native=False
+  6. Optional native desktop window with browser fallback
 
 LATEST ROUND OF CHANGES:
   - Mic recording can now be stopped mid-way (tap the mic again) instead of waiting
@@ -58,6 +58,7 @@ IMPORTANT — please read:
 """
 
 import os
+import importlib.util
 import re
 import json
 import time
@@ -129,6 +130,9 @@ MEMORY_STORE = WORKSPACE_SERVICE.memory  # retained for legacy vault operations
 CHAT_HISTORY_DIR = WORKSPACE_DIR / "chat_history"
 CHAT_HISTORY_DIR.mkdir(exist_ok=True)
 app.add_static_files("/workspace-files", str(WORKSPACE_DIR))  # lets the modal show/download images & videos directly
+# The desktop, web and Android shells share this exact approved SO SVG asset.
+MASTER_BRAND_ASSET = BASE_DIR / "clients" / "web" / "public"
+app.add_static_files("/sovereign-assets", str(MASTER_BRAND_ASSET))
 
 # Deliberately a small, named allow-list rather than an arbitrary path the model could
 # pick — "save it to my Desktop" works, but nothing can write to arbitrary system paths.
@@ -1054,6 +1058,163 @@ body {
 
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 8px; }
+
+/* ── SovereignOS 2050 desktop shell ─────────────────────────────────────── */
+:root{
+  --bg:#030918;--panel:rgba(8,25,48,.78);--panel-border:rgba(53,170,224,.22);
+  --accent-gold:#e6b85c;--accent-teal:#28d5ee;--accent-rose:#ef718b;
+  --text:#edf7ff;--text-muted:#8da9c5;
+}
+body{
+  background:
+    radial-gradient(ellipse at 50% -18%,rgba(15,102,173,.26),transparent 52%),
+    radial-gradient(ellipse at 100% 100%,rgba(16,67,119,.16),transparent 42%),
+    #030918!important;
+  color:var(--text);
+}
+.app-header{
+  position:sticky;top:0;z-index:30;padding:12px 24px;
+  background:rgba(3,9,24,.86);border-bottom:1px solid rgba(39,155,207,.24);
+  backdrop-filter:blur(22px);-webkit-backdrop-filter:blur(22px);
+  box-shadow:0 10px 36px rgba(0,0,0,.22);
+}
+.desktop-brand{display:flex;align-items:center;gap:12px;min-width:220px}
+.desktop-brand-mark{width:48px;height:38px;object-fit:contain;filter:drop-shadow(0 0 12px #1caeff77)}
+.app-title{display:flex;flex-direction:column;line-height:1.05;font-size:17px;letter-spacing:.12em}
+.app-title-accent{color:#b6eaff}
+.app-title small{margin-top:5px;color:#7298ba;font-size:8px;letter-spacing:.22em}
+.status-indicator{color:#a9f5e6;border-color:#1a816f;background:#062a2a66}
+.app-body{padding:22px 22px 100px;gap:20px;min-height:calc(100vh - 72px)}
+.glass-panel{
+  background:linear-gradient(145deg,rgba(10,31,57,.88),rgba(5,17,34,.86));
+  border-color:rgba(39,151,203,.28);border-radius:20px;
+  box-shadow:0 18px 54px rgba(0,0,0,.3),inset 0 1px rgba(255,255,255,.035);
+}
+.chat-panel{height:calc(100vh - 170px);min-height:440px}
+.chat-input-row{padding:10px;border:1px solid rgba(45,168,220,.32);border-radius:17px;background:rgba(5,22,42,.86)}
+.chat-input,.chat-input .q-field__control{background:transparent!important}
+.icon-button{background:linear-gradient(135deg,#087ee7,#21cce6)!important;color:#021326!important;border-radius:13px!important}
+.files-panel{border:1px solid rgba(39,151,203,.28)}
+.avatar-stage.sovereign-core-stage{height:214px;display:flex;flex-direction:column;gap:4px}
+.sovereign-core-avatar{
+  width:166px;height:166px;display:grid;place-items:center;isolation:isolate;
+  animation:sovereign-core-float 5s ease-in-out infinite;
+}
+.sovereign-master-mark{
+  position:relative;z-index:3;width:132px;height:100px;object-fit:contain;
+  background:transparent;border:0;box-shadow:none;
+  filter:drop-shadow(0 0 15px rgba(31,181,255,.45));
+}
+.sovereign-core-avatar .avatar-glow{
+  z-index:0;inset:4px;border-radius:50%;
+  background:radial-gradient(circle,rgba(20,157,235,.32),rgba(10,71,126,.1) 48%,transparent 72%);
+  filter:blur(8px);
+}
+.sovereign-core-orbit{
+  position:absolute;z-index:1;left:50%;top:50%;width:154px;height:154px;
+  border:1px solid rgba(42,190,235,.25);border-radius:50%;
+  transform:translate(-50%,-50%);box-shadow:0 0 26px rgba(12,151,220,.12),inset 0 0 20px rgba(12,151,220,.08);
+}
+.sovereign-core-orbit-back{width:190px;height:190px;border-color:rgba(36,145,207,.18)}
+.sovereign-core-orbit-front{width:126px;height:126px;border-color:rgba(50,206,240,.34);border-top-color:rgba(230,184,92,.7);animation:sovereign-orbit-spin 18s linear infinite}
+.sovereign-core-caption{font-size:9px;letter-spacing:.22em;color:#83a9c9}
+.sovereign-core-caption span{color:#4be0c0;margin-left:8px}
+.avatar-listening .sovereign-master-mark{filter:drop-shadow(0 0 22px #25d8f4)!important}
+.avatar-listening .sovereign-core-orbit-front{border-top-color:#4de4f2;animation-duration:4s}
+.avatar-thinking .sovereign-core-orbit-front{border-top-color:#f0c477;animation-duration:2.4s}
+.avatar-talking .sovereign-master-mark{filter:drop-shadow(0 0 25px #1c9dff)!important}
+.avatar-talking .sovereign-core-orbit-back{animation:sovereign-orbit-pulse 1.1s ease-in-out infinite}
+@keyframes sovereign-core-float{0%,100%{transform:translateY(0)}50%{transform:translateY(-5px)}}
+@keyframes sovereign-orbit-spin{to{transform:translate(-50%,-50%) rotate(360deg)}}
+@keyframes sovereign-orbit-pulse{0%,100%{opacity:.55;transform:translate(-50%,-50%) scale(.96)}50%{opacity:1;transform:translate(-50%,-50%) scale(1.06)}}
+.sovereign-desktop-dock{
+  position:fixed!important;z-index:1000;left:50%;bottom:16px;transform:translateX(-50%);
+  width:max-content;max-width:calc(100vw - 28px);display:flex;align-items:center;justify-content:center;
+  gap:5px;padding:8px 10px;border:1px solid rgba(61,178,226,.34);border-radius:20px;
+  background:linear-gradient(135deg,rgba(7,28,52,.94),rgba(4,14,30,.94));
+  box-shadow:0 18px 54px rgba(0,0,0,.52),0 0 28px rgba(18,147,220,.12);
+  backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);
+}
+.sovereign-desktop-dock .q-btn{min-height:42px;border-radius:13px;color:#c6eaff!important;padding:0 12px}
+.sovereign-desktop-dock .q-btn:hover{background:rgba(25,148,217,.18)!important;color:#fff!important}
+.sovereign-desktop-dock .q-icon{color:#48d3ed}
+.desktop-system-clock{padding:0 10px;border-left:1px solid rgba(80,158,199,.25);color:#86a8c5;font:9px 'IBM Plex Sans',sans-serif;letter-spacing:.12em;white-space:nowrap}
+.sovereign-command-palette{min-width:min(620px,92vw)!important;max-width:620px!important;padding:22px!important;border:1px solid rgba(47,177,227,.4)!important;background:rgba(4,17,35,.96)!important}
+.desktop-command-row{align-items:center;gap:12px;padding:4px 0;border-bottom:1px solid rgba(75,139,177,.13)}
+.desktop-command-action{min-width:190px;justify-content:flex-start;color:#d7f2ff!important}
+.desktop-command-row .files-empty{padding:0}
+@media(max-width:900px){
+ .app-body{flex-wrap:wrap!important;padding:14px 12px 90px}
+ .chat-panel{height:auto;min-height:58vh;min-width:0;width:100%}
+ .side-panel{min-width:0;width:100%}
+ .sovereign-desktop-dock{bottom:8px;gap:0;padding:6px}
+ .sovereign-desktop-dock .q-btn{min-width:42px;padding:0 8px}
+ .desktop-system-clock{display:none}
+}
+@media(max-width:560px){
+ .app-header{padding:10px 12px;gap:8px;flex-wrap:wrap}
+ .desktop-brand{min-width:0}
+ .desktop-brand-mark{width:40px;height:32px}
+ .app-title{font-size:14px}
+ .app-title small{font-size:7px}
+ .sovereign-desktop-dock .q-btn{font-size:10px;padding:0 5px}
+ .sovereign-desktop-dock .q-btn .q-icon{font-size:17px}
+ .sovereign-command-palette{min-width:92vw!important}
+}
+@media(prefers-reduced-motion:reduce){
+ .sovereign-core-avatar,.sovereign-core-orbit{animation:none!important}
+}
+
+
+/* ── 2050 intelligence workspace: visual system upgrade ────────────────── */
+:root{
+  --bg:#030918;--panel:rgba(8,22,43,.78);--panel-border:rgba(88,173,218,.18);
+  --accent-gold:#e9bd72;--accent-teal:#52d9ee;--text:#eaf5ff;--text-muted:#8ea9c2;
+}
+html,body,.nicegui-content{min-height:100%;background:#030918!important}
+body{background:radial-gradient(ellipse at 70% 4%,rgba(20,91,137,.22),transparent 38%),radial-gradient(ellipse at 12% 78%,rgba(16,49,93,.18),transparent 42%),#030918!important}
+.app-header{position:sticky;top:0;z-index:20;min-height:76px;padding:12px 28px 12px 34px!important;gap:14px!important;background:rgba(3,12,27,.82)!important;border-bottom:1px solid rgba(86,175,222,.16)!important;backdrop-filter:blur(24px)!important}
+.desktop-brand{display:flex;align-items:center;gap:13px;min-width:250px}
+.desktop-brand-mark{width:48px!important;height:48px!important;object-fit:contain;background:transparent!important;border:0!important;box-shadow:none!important}
+.app-title{font-size:16px!important;letter-spacing:.16em!important;font-weight:700!important;color:#edf8ff!important}
+.app-title-accent{color:#69d9ed!important}
+.app-title small{display:block;margin-top:4px;font-size:8px;letter-spacing:.25em;color:#789bb8}
+.status-indicator{font-size:10px!important;letter-spacing:.1em;padding:7px 12px!important;background:rgba(36,204,170,.08)!important;border:1px solid rgba(58,221,190,.2)!important;color:#78e4c9!important}
+.app-header .q-btn,.app-header .q-field{border-radius:12px!important}
+.app-body{min-height:calc(100vh - 78px);height:calc(100vh - 78px);padding:22px 26px 94px 112px!important;gap:20px!important;align-items:stretch!important;overflow:hidden}
+.chat-panel{height:100%!important;min-width:0!important;flex:1 1 auto!important;padding:0!important;gap:0!important;overflow:hidden;border:1px solid rgba(92,174,220,.19)!important;border-radius:24px!important;background:linear-gradient(155deg,rgba(10,29,53,.94),rgba(4,14,30,.96))!important;box-shadow:0 24px 80px rgba(0,0,0,.36),inset 0 1px rgba(255,255,255,.035)!important}
+.chat-panel:before{content:"INTELLIGENCE STREAM  /  ENCRYPTED WORKSPACE";display:block;flex:0 0 auto;padding:19px 24px 15px;color:#7fa9c8;font:600 9px 'IBM Plex Sans',sans-serif;letter-spacing:.22em;border-bottom:1px solid rgba(94,168,211,.13)}
+.chat-log{padding:24px 26px 20px!important;gap:16px!important;min-height:0;scrollbar-width:thin;scrollbar-color:rgba(74,174,220,.32) transparent}
+.chat-bubble{max-width:min(82%,820px)!important;padding:15px 18px!important;border-radius:18px!important;line-height:1.62!important;font-size:14px!important;white-space:pre-wrap;overflow-wrap:anywhere}
+.chat-bubble-user{align-self:flex-end!important;background:linear-gradient(135deg,rgba(17,111,166,.36),rgba(21,65,112,.42))!important;border:1px solid rgba(75,189,231,.25)!important;color:#eaf8ff!important;border-bottom-right-radius:6px!important}
+.chat-bubble-assistant{align-self:flex-start!important;background:rgba(8,28,49,.76)!important;border:1px solid rgba(109,169,205,.16)!important;color:#dcecf8!important;border-bottom-left-radius:6px!important;box-shadow:0 10px 34px rgba(0,0,0,.14)}
+.chat-input-row{flex:0 0 auto!important;align-items:center!important;gap:10px!important;margin:0 20px 20px!important;padding:10px 11px 10px 17px!important;width:calc(100% - 40px)!important;border:1px solid rgba(74,179,224,.28)!important;border-radius:20px!important;background:rgba(3,16,33,.94)!important;box-shadow:0 12px 38px rgba(0,0,0,.25),0 0 30px rgba(32,143,196,.07)!important}
+.chat-input{flex:1 1 auto!important;min-width:0!important}
+.chat-input .q-field__control{min-height:48px!important;background:transparent!important;border:0!important;box-shadow:none!important}
+.chat-input .q-field__native{font-size:14px!important;color:#eff9ff!important;padding:12px 2px!important}
+.chat-input .q-field__native::placeholder{color:#7795ae!important}
+.chat-input .q-field__control:before,.chat-input .q-field__control:after{display:none!important}
+.icon-button{width:46px!important;height:46px!important;min-height:46px!important;border-radius:14px!important;background:linear-gradient(145deg,#137aa9,#12507f)!important;color:#e8faff!important;box-shadow:0 5px 18px rgba(14,123,174,.22)!important}
+.icon-button .q-icon{font-size:20px!important}
+.side-panel{flex:0 0 300px!important;min-width:260px!important;max-width:320px!important;gap:14px!important;overflow-y:auto;scrollbar-width:thin}
+.side-panel>.glass-panel,.files-panel{border:1px solid rgba(87,166,213,.17)!important;border-radius:22px!important;background:linear-gradient(150deg,rgba(8,27,49,.88),rgba(4,15,31,.94))!important;box-shadow:0 18px 50px rgba(0,0,0,.22)!important}
+.side-panel .avatar-stage{min-height:275px!important;padding:22px 10px!important}
+.sovereign-core-caption{font-size:9px!important;letter-spacing:.25em!important;color:#88b3d1!important}
+.sovereign-core-caption span{color:#69e2c4!important}
+.sovereign-master-mark{background:transparent!important;border:0!important;box-shadow:none!important;object-fit:contain}
+.files-panel{padding:17px!important}
+.panel-title{font-size:11px!important;letter-spacing:.18em!important;color:#b6d7ed!important;text-transform:uppercase}
+.drop-zone{border:1px dashed rgba(77,176,220,.3)!important;border-radius:16px!important;background:rgba(15,61,91,.16)!important;color:#89abc4!important}
+.sovereign-desktop-dock{left:18px!important;top:50%!important;bottom:auto!important;transform:translateY(-50%)!important;width:76px!important;max-width:76px!important;flex-direction:column!important;gap:8px!important;padding:12px 8px!important;border-radius:23px!important;background:linear-gradient(180deg,rgba(7,29,52,.96),rgba(3,13,29,.97))!important;border:1px solid rgba(69,170,219,.24)!important;box-shadow:0 22px 70px rgba(0,0,0,.48),0 0 32px rgba(17,128,189,.12)!important}
+.sovereign-desktop-dock .q-btn{width:58px!important;min-height:56px!important;padding:5px 2px!important;display:flex!important;flex-direction:column!important;gap:3px!important;border-radius:15px!important;font-size:9px!important;letter-spacing:.02em!important;color:#a9c9e0!important}
+.sovereign-desktop-dock .q-btn .q-icon{font-size:21px!important;color:#61d5eb!important}
+.sovereign-desktop-dock .q-btn:hover{background:rgba(31,139,190,.2)!important;color:#fff!important}
+.desktop-system-clock{display:none!important}
+.sovereign-command-palette{border-radius:22px!important;box-shadow:0 30px 100px rgba(0,0,0,.65)!important}
+@media(max-width:1100px){.side-panel{flex-basis:250px!important;min-width:230px!important}.app-body{padding-left:104px!important;padding-right:16px!important}}
+@media(max-width:850px){.app-header{padding:10px 14px!important;flex-wrap:wrap!important}.app-body{height:auto!important;min-height:calc(100vh - 70px);overflow:visible!important;flex-wrap:wrap!important;padding:14px 12px 92px 12px!important}.chat-panel{height:72vh!important;min-height:540px!important;width:100%!important;flex:1 1 100%!important}.side-panel{width:100%!important;max-width:none!important;flex-direction:row!important;flex-wrap:wrap!important;overflow:visible!important}.side-panel>.glass-panel,.files-panel{flex:1 1 260px!important}.sovereign-desktop-dock{left:50%!important;top:auto!important;bottom:10px!important;transform:translateX(-50%)!important;width:auto!important;max-width:calc(100vw - 20px)!important;flex-direction:row!important;border-radius:18px!important}.sovereign-desktop-dock .q-btn{width:auto!important;min-width:48px!important;min-height:48px!important;padding:4px 8px!important}.desktop-system-clock{display:none!important}}
+@media(max-width:560px){.desktop-brand{min-width:0!important}.desktop-brand-mark{width:38px!important;height:38px!important}.app-title{font-size:12px!important}.app-title small{font-size:7px!important}.chat-panel{min-height:62vh!important;height:68vh!important}.chat-log{padding:16px 12px!important}.chat-bubble{max-width:94%!important;font-size:13px!important}.chat-input-row{margin:0 10px 12px!important;width:calc(100% - 20px)!important;padding:7px!important}.icon-button{width:42px!important;height:42px!important;min-height:42px!important}.sovereign-desktop-dock .q-btn{min-width:42px!important;padding:3px 5px!important;font-size:8px!important}.side-panel .avatar-stage{min-height:220px!important}}
+
 </style>
 
 <div id="toast-container" class="toast-container"></div>
@@ -1217,18 +1378,16 @@ document.addEventListener('drop', function (e) {
 """
 
 AVATAR_HTML = """
-<div class="avatar-stage">
-  <div id="avatar" class="avatar avatar-idle">
+<div class="avatar-stage sovereign-core-stage">
+  <div id="avatar" class="avatar avatar-idle sovereign-core-avatar">
     <div class="avatar-glow"></div>
+    <div class="sovereign-core-orbit sovereign-core-orbit-back"></div>
+    <div class="sovereign-core-orbit sovereign-core-orbit-front"></div>
+    <img class="sovereign-master-mark" src="/sovereign-assets/sovereign-os-mark.svg"
+         alt="SovereignOS official SO orbital emblem">
     <div class="avatar-thinking-dots"><span></span><span></span><span></span></div>
-    <div class="avatar-head">
-      <div class="avatar-eye avatar-eye-left"><div class="avatar-eye-shine"></div></div>
-      <div class="avatar-eye avatar-eye-right"><div class="avatar-eye-shine"></div></div>
-      <div class="avatar-blush avatar-blush-left"></div>
-      <div class="avatar-blush avatar-blush-right"></div>
-      <div class="avatar-mouth"></div>
-    </div>
   </div>
+  <div class="sovereign-core-caption">SOVEREIGN CORE <span>● ONLINE</span></div>
 </div>
 """
 
@@ -1281,7 +1440,7 @@ def main_page():
 
     # ---- Header --------------------------------------------------------
     with ui.row().classes("app-header w-full"):
-        ui.html('<span class="app-title">SOVEREIGN <span class="app-title-accent">OS</span></span>')
+        ui.html('<span class="desktop-brand"><img class="desktop-brand-mark" src="/sovereign-assets/sovereign-os-mark.svg" alt="SovereignOS official SO orbital emblem"><span class="app-title">SOVEREIGN <span class="app-title-accent">OS</span><small>2050 INTELLIGENCE ENVIRONMENT</small></span></span>')
         ui.html('<span id="status-indicator" class="status-indicator">🟢 Online</span>')
         initial_model = MODEL_ROUTER.candidates[0].info.label if MODEL_ROUTER.candidates else "No provider configured"
         model_indicator = ui.label(f"Ready: {initial_model}").classes("files-empty")
@@ -1307,7 +1466,7 @@ def main_page():
 
     # ---- Body ------------------------------------------------------------
     with ui.row().classes("app-body w-full no-wrap"):
-        # LEFT: chat
+        # LEFT: primary intelligence surface
         with ui.column().classes("chat-panel glass-panel"):
             chat_log = ui.column().classes("chat-log w-full")
 
@@ -1721,6 +1880,55 @@ def main_page():
     message_input.on("keydown.enter", lambda: send_message())
     mic_button.on_click(on_mic_click)
 
+    # ---- 2050 desktop command dock + keyboard command palette -------------
+    with ui.dialog() as command_dialog, ui.card().classes("glass-modal sovereign-command-palette"):
+        ui.label("Sovereign command").classes("modal-title")
+        ui.label("A single command surface for your workspace.").classes("files-empty")
+        command_search = ui.input(placeholder="Search commands…").props("outlined dense dark").classes("w-full")
+        command_results = ui.column().classes("w-full")
+        desktop_commands = [
+            ("Open Intelligence", "Focus the message composer", lambda: message_input.run_method("focus")),
+            ("Switch workspace", "Open the isolated workspace selector", lambda: workspace_select.run_method("showPopup")),
+            ("Start voice capture", "Use the desktop microphone", lambda: on_mic_click()),
+            ("Open Memory Vault", "Inspect workspace-scoped memory", lambda: open_memory_panel()),
+            ("Model health", "Inspect configured providers and routing", lambda: open_model_health()),
+            ("Recent files", "Jump to the file workspace", lambda: client.run_javascript("document.querySelector('.files-panel')?.scrollIntoView({behavior:'smooth',block:'center'})")),
+            ("Stop speech", "Interrupt spoken output", lambda: stop_speech()),
+            ("Clear conversation", "Clear the current workspace conversation", lambda: clear_chat()),
+        ]
+
+        async def run_desktop_command(action):
+            command_dialog.close()
+            result = action()
+            if asyncio.iscoroutine(result):
+                await result
+
+        def render_desktop_commands(query: str = ""):
+            command_results.clear()
+            needle = (query or "").strip().casefold()
+            matches = [item for item in desktop_commands
+                       if needle in item[0].casefold() or needle in item[1].casefold()]
+            with command_results:
+                if not matches:
+                    ui.label("No matching commands.").classes("files-empty")
+                for title, description, action in matches:
+                    with ui.row().classes("desktop-command-row w-full"):
+                        ui.button(title, on_click=lambda fn=action: run_desktop_command(fn)).props("flat").classes("desktop-command-action")
+                        ui.label(description).classes("files-empty")
+
+        command_search.on_value_change(lambda e: render_desktop_commands(e.value))
+        render_desktop_commands()
+
+    with ui.row().classes("sovereign-desktop-dock"):
+        ui.button("Intelligence", icon="forum", on_click=lambda: message_input.run_method("focus")).props("flat")
+        ui.button("Voice", icon="graphic_eq", on_click=on_mic_click).props("flat")
+        ui.button("Files", icon="folder_open", on_click=lambda: client.run_javascript("document.querySelector('.files-panel')?.scrollIntoView({behavior:'smooth',block:'center'})")).props("flat")
+        ui.button("Memory", icon="psychology", on_click=open_memory_panel).props("flat")
+        ui.button("Models", icon="monitor_heart", on_click=open_model_health).props("flat")
+        ui.button("⌘ K", on_click=command_dialog.open).props("id=desktop-command flat")
+        ui.html('<span class="desktop-system-clock" id="desktop-system-clock">LOCAL SYSTEM · --:--:--</span>')
+    client.run_javascript("if(!window.sovereignDesktopClock){window.sovereignDesktopClock=setInterval(()=>{const n=document.getElementById('desktop-system-clock');if(n)n.textContent='LOCAL SYSTEM · '+new Intl.DateTimeFormat(undefined,{hour:'2-digit',minute:'2-digit',second:'2-digit'}).format(new Date());},1000);document.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='k'){e.preventDefault();document.getElementById('desktop-command')?.click();}});}")
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ENTRYPOINT
@@ -1729,11 +1937,28 @@ def main_page():
 if __name__ in {"__main__", "__mp_main__"}:
     if not MODEL_ROUTER.candidates:
         print("WARNING: No model configured. Add GROQ_API_KEY, OPENROUTER_API_KEY, or configure OLLAMA_MODEL.")
+    # Prefer a real native desktop window when PyWebView is installed. Keep a
+    # deterministic browser fallback so existing installations never stop launching.
+    native_setting = os.getenv("SOVEREIGN_NATIVE_WINDOW", "auto").strip().casefold()
+    webview_available = importlib.util.find_spec("webview") is not None
+    valid_native_settings = {"auto", "1", "true", "yes", "on", "0", "false", "no", "off"}
+    native_mode = webview_available if native_setting == "auto" else native_setting in {"1", "true", "yes", "on"}
+    if native_setting not in valid_native_settings:
+        print(f"Unrecognised SOVEREIGN_NATIVE_WINDOW={native_setting!r}; using browser mode.")
+        native_mode = False
+    if native_mode and not webview_available:
+        print("Native window requested but PyWebView is missing. Install requirements-desktop-native.txt; opening browser mode instead.")
+        native_mode = False
+
+    print("Launching SovereignOS native desktop shell." if native_mode
+          else "Launching SovereignOS in local browser mode.")
     ui.run(
-        title="Sovereign OS",
-        native=False,          # FIX 6: real browser window -> minimize/maximize/close all present
+        title="SovereignOS",
+        native=native_mode,
+        window_size=(1440, 900) if native_mode else None,
+        host="127.0.0.1",
         reload=False,
         port=8080,
         dark=True,
-        show=True,
+        show=not native_mode,
     )

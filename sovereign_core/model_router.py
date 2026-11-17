@@ -217,9 +217,31 @@ class ModelRouter:
             if not groups["groq"] and not any("Groq client dependency" in w for w in self.configuration_warnings):
                 self.configuration_warnings.append("Groq key found, but no Groq model client initialized. Check model IDs and dependencies.")
 
-        self._add_compatible(groups, "OpenRouter Free", "OPENROUTER_API_KEY",
-            "OPENROUTER_MODEL", "openrouter/free", "https://openrouter.ai/api/v1",
-            headers={"X-Title": "SovereignOS"})
+        openrouter_models = [
+            self.env.get("OPENROUTER_MODEL", "openrouter/free").strip(),
+            *[value.strip() for value in self.env.get(
+                "OPENROUTER_FALLBACK_MODELS",
+                "nvidia/nemotron-3.5-super-vl:free,nvidia/nemotron-3-ultra-550b-a55b:free,cohere/north-mini-code:free"
+            ).split(",") if value.strip()],
+        ]
+        seen_openrouter = set()
+        for index, model in enumerate(openrouter_models):
+            if not model or model.casefold() in seen_openrouter:
+                continue
+            seen_openrouter.add(model.casefold())
+            if index == 0:
+                self._add_compatible(groups, "OpenRouter Free", "OPENROUTER_API_KEY",
+                    "OPENROUTER_MODEL", "openrouter/free", "https://openrouter.ai/api/v1",
+                    headers={"X-Title": "SovereignOS"})
+            else:
+                key = self.env.get("OPENROUTER_API_KEY", "").strip()
+                if key:
+                    client = self._openai_compatible("OpenRouter Free", key, model,
+                        "https://openrouter.ai/api/v1", extra_headers={"X-Title": "SovereignOS"})
+                    if client is not None:
+                        groups["openrouter"].append(
+                            ModelCandidate(ModelInfo("OpenRouter Free", model, "cloud"), client)
+                        )
         # Cloudflare's free daily allocation is shared across its account. Choose
         # a model that Cloudflare currently lists as Free-plan eligible by default.
         account = self.env.get("CLOUDFLARE_ACCOUNT_ID", "").strip()
@@ -260,6 +282,10 @@ class ModelRouter:
         # Paid Mistral is deliberately absent from the default order.
         if "mistral" in order and groups["mistral"]:
             result.extend(groups["mistral"])
+        if not result and not self.configuration_warnings:
+            self.configuration_warnings.append(
+                "No provider credentials were found in the API process. Add GROQ_API_KEY or OPENROUTER_API_KEY to the project .env file, then restart the API."
+            )
         return result
 
     def _cooldown_key(self, candidate: ModelCandidate) -> str:
@@ -323,7 +349,7 @@ class ModelRouter:
             })
         return rows
 
-    def invoke(self, messages, tools=None, start_index: int | None = None):
+    def invoke(self, messages, tools=None, start_index: int | None = None, max_tokens: int | None = None):
         """Invoke from the manually selected model, then use configured fallbacks."""
         if start_index is None:
             start_index = self.active_index
@@ -345,7 +371,11 @@ class ModelRouter:
                 failures.append(f"{candidate.info.label}: skipped: {reason}")
                 continue
             try:
-                model = candidate.client.bind_tools(tools) if tools is not None else candidate.client
+                model = candidate.client
+                if tools is not None:
+                    model = model.bind_tools(tools)
+                if max_tokens is not None:
+                    model = model.bind(max_tokens=int(max_tokens))
                 result = model.invoke(messages)
                 provider = candidate.info.provider.casefold()
                 self._provider_successes[provider] = self._provider_successes.get(provider, 0) + 1
