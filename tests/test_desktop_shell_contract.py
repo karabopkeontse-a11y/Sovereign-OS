@@ -24,6 +24,14 @@ class DesktopShellContractTests(unittest.TestCase):
         self.assertIn('rel="icon" href="./sovereign-os-mark.svg"', index)
         self.assertIn('"src":"./sovereign-os-mark.svg"', manifest)
 
+    def test_2050_chat_surface_has_fixed_composer_and_desktop_rail(self):
+        source = (ROOT / "sovereign_os_ultimate.py").read_text(encoding="utf-8")
+        self.assertIn("2050 intelligence workspace: visual system upgrade", source)
+        self.assertIn(".chat-input-row{flex:0 0 auto!important", source)
+        self.assertIn(".sovereign-desktop-dock{left:18px!important", source)
+        self.assertIn(".chat-bubble-assistant{", source)
+        self.assertIn(".desktop-brand-mark{", source)
+
     def test_native_window_has_safe_browser_fallback(self):
         source = (ROOT / "sovereign_os_ultimate.py").read_text(encoding="utf-8")
         self.assertIn('os.getenv("SOVEREIGN_NATIVE_WINDOW", "auto")', source)
