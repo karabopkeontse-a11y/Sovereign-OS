@@ -1845,6 +1845,12 @@ def main_page():
             ("Clear conversation", "Clear the current workspace conversation", lambda: clear_chat()),
         ]
 
+        async def run_desktop_command(action):
+            command_dialog.close()
+            result = action()
+            if asyncio.iscoroutine(result):
+                await result
+
         def render_desktop_commands(query: str = ""):
             command_results.clear()
             needle = (query or "").strip().casefold()
@@ -1855,7 +1861,7 @@ def main_page():
                     ui.label("No matching commands.").classes("files-empty")
                 for title, description, action in matches:
                     with ui.row().classes("desktop-command-row w-full"):
-                        ui.button(title, on_click=lambda fn=action: (command_dialog.close(), fn())).props("flat").classes("desktop-command-action")
+                        ui.button(title, on_click=lambda fn=action: run_desktop_command(fn)).props("flat").classes("desktop-command-action")
                         ui.label(description).classes("files-empty")
 
         command_search.on_value_change(lambda e: render_desktop_commands(e.value))
