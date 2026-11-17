@@ -17,6 +17,12 @@ class DesktopShellTests(unittest.TestCase):
         self.assertIn('"/sovereign-assets"', source)
         self.assertIn('src="/sovereign-assets/sovereign-os-mark.svg"', source)
 
+    def test_desktop_starts_local_api_with_shared_router(self):
+        source = DESKTOP.read_text(encoding="utf-8")
+        self.assertIn("def start_embedded_api()", source)
+        self.assertIn("create_app(db_path=WORKSPACE_DB, router=MODEL_ROUTER, token=token)", source)
+        self.assertIn("start_embedded_api()", source)
+
     def test_desktop_has_os_command_surface(self):
         source = DESKTOP.read_text(encoding="utf-8")
         self.assertIn("sovereign-desktop-dock", source)

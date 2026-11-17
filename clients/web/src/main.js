@@ -16,6 +16,28 @@ function view(name){document.querySelectorAll(".view").forEach(x=>x.classList.ad
 document.querySelectorAll(".nav").forEach(b=>b.onclick=()=>view(b.dataset.view));
 document.querySelectorAll("[data-go]").forEach(b=>b.onclick=()=>view(b.dataset.go));
 function renderWorkspaces(){const s=el("workspace");s.replaceChildren();workspaces.forEach(w=>{const o=document.createElement("option");o.value=w.id;o.textContent=w.name;s.append(o)});s.value=active;const w=workspaces.find(x=>x.id===active);el("active").textContent=w?.name||"Not connected";el("chat-title").textContent=w?.name==="SmartFlow BW"?"Thothi · SmartFlow BW":"SovereignOS · "+(w?.name||"Workspace");if(el("intel-presence"))el("intel-presence").textContent=w?w.purpose:"No active workspace selected";el("workspace-list").replaceChildren(...workspaces.map(w=>{const d=document.createElement("div");d.className="workspace-row";const b=document.createElement("b");b.textContent=w.name;const p=document.createElement("small");p.textContent=w.purpose;d.append(b,p);return d;}));}
+async function autoConnectLocal(){
+ const feedback=el("settings-feedback");
+ for(let attempt=0;attempt<16;attempt++){
+  try{
+   const response=await fetch("http://127.0.0.1:8765/api/v1/bootstrap",{cache:"no-store"});
+   if(!response.ok)throw Error("Local bootstrap unavailable");
+   const session=await response.json();
+   if(!session.api_url||!session.token)throw Error("Local session configuration is incomplete.");
+   base=session.api_url;token=session.token;
+   if(el("api-url"))el("api-url").value=base;
+   if(el("api-token"))el("api-token").value=token;
+   await connect();
+   return;
+  }catch(error){
+   if(attempt===15){
+    if(feedback)feedback.textContent="Local SovereignOS service was not detected. Launch SovereignOS from its desktop launcher; manual API setup is not required for the local desktop.";
+    return;
+   }
+   await new Promise(resolve=>setTimeout(resolve,650));
+  }
+ }
+}
 async function connect(){
  const button=el("save");
  apiConnected=false;updateCallSupport();
@@ -133,4 +155,4 @@ el("call-text-form").addEventListener("submit",async event=>{event.preventDefaul
 el("call-text").addEventListener("input",event=>{event.target.style.height="48px";event.target.style.height=Math.min(event.target.scrollHeight,132)+"px";});
 el("call-attach").onclick=()=>{view("chat");window.setTimeout(()=>el("attach-image").click(),0);};
 if("serviceWorker" in navigator)window.addEventListener("load",async()=>{try{if(import.meta.env.DEV){const registrations=await navigator.serviceWorker.getRegistrations();await Promise.all(registrations.map(r=>r.unregister()));if("caches" in window){const keys=await caches.keys();await Promise.all(keys.map(k=>caches.delete(k)));}if(navigator.serviceWorker.controller&&!sessionStorage.getItem("so-dev-worker-cleared")){sessionStorage.setItem("so-dev-worker-cleared","1");window.location.reload();}return;}await navigator.serviceWorker.register(import.meta.env.BASE_URL+"sw.js",{updateViaCache:"none"});}catch(error){console.warn("SovereignOS worker update skipped:",error);}});
-view("overview");updateCallSupport();
+view("overview");updateCallSupport();autoConnectLocal();

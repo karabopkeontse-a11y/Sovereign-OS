@@ -64,6 +64,8 @@ import json
 import time
 import asyncio
 import threading
+import socket
+import secrets
 import tempfile
 import urllib.parse
 import urllib.request
@@ -1934,7 +1936,40 @@ def main_page():
 # ENTRYPOINT
 # ─────────────────────────────────────────────────────────────────────────────
 
+def start_embedded_api():
+    """Start the authenticated REST API beside the desktop, sharing its live model router."""
+    try:
+        import uvicorn
+        from sovereign_core.api import create_app
+    except ImportError as exc:
+        raise RuntimeError(
+            "SovereignOS API runtime is missing. Install requirements_sovereign.txt once."
+        ) from exc
+
+    host = "127.0.0.1"
+    port = int(os.getenv("SOVEREIGN_API_PORT", "8765"))
+    token = os.getenv("SOVEREIGN_API_TOKEN", "").strip() or secrets.token_urlsafe(32)
+    api_app = create_app(db_path=WORKSPACE_DB, router=MODEL_ROUTER, token=token)
+    config = uvicorn.Config(api_app, host=host, port=port, log_level="warning",
+                            access_log=False, loop="asyncio")
+    server = uvicorn.Server(config)
+    thread = threading.Thread(target=server.run, name="SovereignOS-API", daemon=True)
+    thread.start()
+
+    # Fail fast on a port collision instead of silently opening a broken desktop.
+    deadline = time.monotonic() + 12
+    while time.monotonic() < deadline:
+        if server.started:
+            print(f"SovereignOS API ready at http://{host}:{port} (shared desktop model router).")
+            return server
+        if not thread.is_alive():
+            raise RuntimeError(f"SovereignOS API could not start on {host}:{port}. Check whether another service is using this port.")
+        time.sleep(0.15)
+    raise RuntimeError(f"SovereignOS API startup timed out on {host}:{port}.")
+
+
 if __name__ in {"__main__", "__mp_main__"}:
+    embedded_api = start_embedded_api()
     if not MODEL_ROUTER.candidates:
         print("WARNING: No model configured. Add GROQ_API_KEY, OPENROUTER_API_KEY, or configure OLLAMA_MODEL.")
     # Prefer a real native desktop window when PyWebView is installed. Keep a

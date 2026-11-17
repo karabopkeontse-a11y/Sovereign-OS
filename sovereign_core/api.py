@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import os, secrets, sqlite3
 from pathlib import Path
 from uuid import uuid4
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
 from dotenv import load_dotenv
@@ -164,7 +164,7 @@ def create_app(db_path=None, router=None, token=None):
         app.state.sovereign = state
         yield
     app = FastAPI(title="SovereignOS API", version="1.0.0", lifespan=lifespan)
-    origins = [x.strip() for x in os.getenv("SOVEREIGN_API_CORS_ORIGINS", "").split(",") if x.strip()]
+    origins = [x.strip() for x in os.getenv("SOVEREIGN_API_CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173,http://localhost:8080,http://127.0.0.1:8080").split(",") if x.strip()]
     if origins:
         app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=False,
                            allow_methods=["GET", "POST"], allow_headers=["Authorization", "Content-Type"])
@@ -175,6 +175,23 @@ def create_app(db_path=None, router=None, token=None):
         if not secrets.compare_digest(supplied, expected_token):
             raise HTTPException(401, "Invalid or missing bearer token")
         return True
+    @app.get("/api/v1/bootstrap")
+    def local_bootstrap(request: Request):
+        # Only the local SovereignOS web clients may obtain the ephemeral session token.
+        client_host = request.client.host if request.client else ""
+        origin = request.headers.get("origin", "")
+        allowed_origins = {
+            "http://localhost:5173", "http://127.0.0.1:5173",
+            "http://localhost:8080", "http://127.0.0.1:8080",
+        }
+        configured = {x.strip() for x in os.getenv("SOVEREIGN_API_CORS_ORIGINS", "").split(",") if x.strip()}
+        if client_host not in {"127.0.0.1", "::1", "localhost"}:
+            raise HTTPException(403, "Local bootstrap is only available on this computer.")
+        if origin and origin not in (allowed_origins | configured):
+            raise HTTPException(403, "Origin is not an approved local SovereignOS client.")
+        return {"api_url": "http://127.0.0.1:" + str(int(os.getenv("SOVEREIGN_API_PORT", "8765"))),
+                "token": expected_token, "mode": "local-desktop"}
+
     @app.get("/api/v1/health")
     def health():
         return {"status": "ok", "service": "SovereignOS API", "version": "1.0.0"}

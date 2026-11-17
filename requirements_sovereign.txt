@@ -7,6 +7,8 @@
 # PyAudio is required for microphone capture. FFmpeg is required for MP3 decoding.
 
 nicegui
+fastapi>=0.110,<1
+uvicorn[standard]>=0.27,<1
 langchain-groq
 langchain-core
 ddgs
