@@ -2,13 +2,26 @@
 
 SovereignOS is the shared intelligence and execution core for separate workspaces and client surfaces. Thothi is the SmartFlow BW-facing assistant powered by this core; NCS and Yard Truths retain separate workspace context.
 
-## Existing desktop application
+## 2050 desktop shell
 
-Run the Windows desktop/NiceGUI client with Python 3.11 and the project's existing dependencies:
+The existing NiceGUI desktop client now supports an optional native application window. Its command dock, command palette (`Ctrl+K`), workspace switcher, Memory Vault, Recent Files and Model Health remain part of the same SovereignOS core.
 
-```bat
+Install the optional native-window bridge once:
+
+```powershell
+py -3.11 -m pip install -r requirements-desktop-native.txt
+```
+
+Launch the desktop client:
+
+```powershell
+$env:SOVEREIGN_NATIVE_WINDOW = "auto"
 py -3.11 sovereign_os_ultimate.py
 ```
+
+`auto` opens a native PyWebView window when the bridge is installed and otherwise safely falls back to the local browser. Set `SOVEREIGN_NATIVE_WINDOW=false` to force browser mode. Native mode uses the platform webview engine; Windows and Linux machines must have a compatible runtime installed.
+
+The desktop header and core orb both load `clients/web/public/sovereign-os-mark.svg` directly. The web/PWA surfaces reference that same master asset; do not redraw or replace it with platform-specific variants. Package icons may be raster exports of the same SVG, never a different monogram.
 
 The desktop client now uses the same `clients/web/public/sovereign-os-mark.svg` master asset as the web/PWA/Capacitor surface. Its 2050 shell adds a glass command dock, live local clock, Ctrl+K command palette, shared workspace/model/memory actions, and an animated orbital core that changes state during listening, thinking and speech. The command surface is a UI layer over the existing desktop assistant; it does not create a second model router or separate workspace database.
 
