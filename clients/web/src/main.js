@@ -10,7 +10,7 @@ const providers=["Groq","OpenRouter Free","Cloudflare Workers AI","Z.AI","SambaN
 const titles={overview:["Command centre","Your intelligence. Your devices. Your control."],chat:["Workspace intelligence","A private intelligence workspace."],call:["Call your AI","Talk naturally. Hear Sovereign respond."],models:["Model health","Know which intelligence is ready and why."],iot:["IoT operations","Observe connected systems safely."],approvals:["Approval centre","Your permission is required for consequential actions."],settings:["Settings","Configure your local intelligence connection."]};
 function notice(msg,kind="info"){const stack=el("notification-stack");if(!stack)return;const card=document.createElement("article");card.className="toast toast-"+(kind==="error"?"error":kind==="warning"?"warning":"info");const icon=document.createElement("span");icon.className="toast-icon";icon.textContent=kind==="error"?"!":kind==="warning"?"△":"✦";const copy=document.createElement("div");copy.className="toast-copy";const title=document.createElement("b");title.textContent=kind==="error"?"Needs attention":kind==="warning"?"System notice":"SovereignOS";const body=document.createElement("p");body.textContent=msg;copy.append(title,body);const close=document.createElement("button");close.className="toast-close";close.type="button";close.setAttribute("aria-label","Dismiss notification");close.textContent="×";close.onclick=()=>card.remove();card.append(icon,copy,close);stack.append(card);notificationSound();const duration=Math.max(6,Number(prefs.noticeSeconds)||10)*1000;window.setTimeout(()=>{card.classList.add("toast-leaving");window.setTimeout(()=>card.remove(),350);},kind==="error"?Math.max(duration,16000):duration);while(stack.children.length>5)stack.firstElementChild.remove();}
 function setBusy(button,busy,label){if(!button)return;button.disabled=busy;if(busy){button.dataset.label=button.textContent;button.textContent=label||"Working…";}else if(button.dataset.label){button.textContent=button.dataset.label;delete button.dataset.label;}}
-async function api(path,options={}){if(!base||!token)throw Error("Set API URL and bearer token in Settings.");const r=await fetch(base.replace(/\/$/,"")+path,{...options,headers:{"Content-Type":"application/json","Authorization":"Bearer "+token,...options.headers}});const d=await r.json().catch(()=>({detail:"Invalid response"}));if(!r.ok)throw Error(d.detail||("HTTP "+r.status));return d;}
+async function api(path,options={}){if(!base||!token)throw Error("The local SovereignOS session has not been established. Restart the desktop launcher and reconnect.");const r=await fetch(base.replace(/\/$/,"")+path,{...options,headers:{"Content-Type":"application/json","Authorization":"Bearer "+token,...options.headers}});const d=await r.json().catch(()=>({detail:"Invalid response"}));if(!r.ok)throw Error(d.detail||("HTTP "+r.status));return d;}
 function setCoreState(state){document.body.dataset.coreState=state;document.querySelectorAll(".orb-wrap,.chat-welcome,.call-shell").forEach(node=>{node.dataset.coreState=state;});const indicator=el("chat-state");if(indicator){const labels={idle:"CORE READY",thinking:"PROCESSING",speaking:"RESPONDING",listening:"LISTENING",error:"ATTENTION REQUIRED",connecting:"CONNECTING"};indicator.textContent=labels[state]||"CORE READY";indicator.dataset.state=state;}}
 function view(name){document.querySelectorAll(".view").forEach(x=>x.classList.add("hidden"));el("view-"+name).classList.remove("hidden");document.querySelectorAll(".nav").forEach(x=>x.classList.toggle("active",x.dataset.view===name));el("title").textContent=titles[name][0];el("header-sub").textContent=titles[name][1];if(name==="call")updateCallSupport();if(name==="settings")bindPreferences();}
 document.querySelectorAll(".nav").forEach(b=>b.onclick=()=>view(b.dataset.view));
@@ -20,21 +20,23 @@ async function autoConnectLocal(){
  const feedback=el("settings-feedback");
  const preferred=Number(new URLSearchParams(location.search).get("apiPort"))||8765;
  const ports=[...Array(20)].map((_,i)=>preferred+i);
+ let lastError="No local SovereignOS API answered the bootstrap request.";
  for(let attempt=0;attempt<12;attempt++){
   for(const port of ports){
    try{
     const response=await fetch("http://127.0.0.1:"+port+"/api/v1/bootstrap",{cache:"no-store"});
-    if(!response.ok)continue;
+    if(!response.ok){lastError="API port "+port+" returned HTTP "+response.status+" from bootstrap.";continue;}
     const session=await response.json();
-    if(!session.api_url||!session.token)continue;
+    if(!session.api_url||!session.token){lastError="The local API answered without a valid desktop session.";continue;}
     base=session.api_url;token=session.token;
     await connect();
-    if(apiConnected){if(feedback)feedback.textContent="Connected automatically to the local SovereignOS intelligence core.";return;}
-   }catch(_error){}
+    return;
+   }catch(error){lastError=error?.message||String(error);}
   }
+  if(feedback)feedback.textContent="Searching for the local intelligence core… (attempt "+(attempt+1)+"/12)";
   await new Promise(resolve=>setTimeout(resolve,500));
  }
- if(feedback)feedback.textContent="Local SovereignOS engine not detected. Close duplicate SovereignOS windows and relaunch the desktop. No token entry is required.";
+ if(feedback)feedback.textContent="Could not discover the local API. "+lastError+" Confirm the desktop engine is running, then select Reconnect local engine. No URL or token entry is needed."; 
 }
 async function connect(){
  const button=el("save");
