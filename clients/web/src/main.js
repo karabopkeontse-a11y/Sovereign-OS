@@ -42,7 +42,7 @@ async function connect(){
  setBusy(button,true,"Connecting…");
  el("settings-feedback").textContent="Checking API and authenticating…";
  try{
-  if(!base||!token)throw Error("Local SovereignOS engine has not supplied its automatic session. Relaunch the desktop application.");
+  if(!base||!token)throw Error("Automatic local session is missing. Confirm the SovereignOS desktop engine is running.");
   const h=await fetch(base.replace(/\/$/,"")+"/api/v1/health");
   if(!h.ok)throw Error("API health check failed (HTTP "+h.status+")");
   const ws=await api("/api/v1/workspaces");

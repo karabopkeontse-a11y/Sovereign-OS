@@ -1947,7 +1947,21 @@ def start_embedded_api():
         ) from exc
 
     host = "127.0.0.1"
-    port = int(os.getenv("SOVEREIGN_API_PORT", "8765"))
+    preferred_port = int(os.getenv("SOVEREIGN_API_PORT", "8765"))
+    port = None
+    for candidate_port in range(preferred_port, preferred_port + 20):
+        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            probe.bind((host, candidate_port))
+            port = candidate_port
+            break
+        except OSError:
+            continue
+        finally:
+            probe.close()
+    if port is None:
+        raise RuntimeError("No free local API port found between the configured port and the next 19 ports.")
+    os.environ["SOVEREIGN_API_PORT"] = str(port)
     token = os.getenv("SOVEREIGN_API_TOKEN", "").strip() or secrets.token_urlsafe(32)
     api_app = create_app(db_path=WORKSPACE_DB, router=MODEL_ROUTER, token=token)
     config = uvicorn.Config(api_app, host=host, port=port, log_level="warning",
