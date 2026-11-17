@@ -103,10 +103,10 @@ class SovereignAPI:
                            (conversation_id, workspace.id, payload.message[:72], stamp, stamp))
                 db.commit()
             prior = db.execute("SELECT role, content FROM api_messages WHERE conversation_id=? "
-                               "ORDER BY created_at DESC LIMIT 12", (conversation_id,)).fetchall()
+                               "ORDER BY created_at DESC LIMIT " + ("6" if payload.voice_mode else "12"), (conversation_id,)).fetchall()
         finally:
             db.close()
-        memories = self.workspaces.search(workspace.id, payload.message, limit=3 if payload.voice_mode else 5)
+        memories = self.workspaces.search(workspace.id, payload.message, limit=2 if payload.voice_mode else 5)
         memory_context = "\n".join("- " + item.content for item in memories)
         assistant_name = "Thothi, the customer-facing SmartFlow BW assistant powered by SovereignOS" if workspace.name == "SmartFlow BW" else "SovereignOS"
         system = ("You are " + assistant_name + " in the " + workspace.name + " workspace. Purpose: "
@@ -114,7 +114,7 @@ class SovereignAPI:
                   "external actions. Financial, publishing, destructive and physical-device actions "
                   "require human approval. Relevant memories:\n" + (memory_context or "(none)"))
         if payload.voice_mode:
-            system += " For voice conversations, respond naturally and concisely, like a helpful person on a live call. Use short spoken sentences, avoid Markdown, tables and decorative symbols, and lead with the useful answer."
+            system += " For voice conversations, optimise for a fast live exchange. Give the direct answer first in one or two short sentences, then pause for the user. Avoid long preambles, Markdown, tables and decorative symbols. Ask at most one concise follow-up question when essential."
         try:
             from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
             messages = [SystemMessage(content=system)]
