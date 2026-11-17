@@ -1968,9 +1968,13 @@ def start_web_client():
     npm = shutil.which("npm.cmd") or shutil.which("npm")
     if not npm:
         raise RuntimeError("Node.js/npm is required to launch SovereignOS. Install Node.js once, then relaunch.")
+    vite_args = "run dev -- --host 127.0.0.1 --port 5173 --strictPort"
+    if os.name == "nt" and npm.casefold().endswith((".cmd", ".bat")):
+        command = [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/s", "/c", '"' + npm + '" ' + vite_args]
+    else:
+        command = [npm, *vite_args.split()]
     process = subprocess.Popen(
-        [npm, "run", "dev", "--", "--host", "127.0.0.1", "--port", "5173", "--strictPort"],
-        cwd=str(web_dir), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        command, cwd=str(web_dir), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         stdin=subprocess.DEVNULL, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
     deadline = time.monotonic() + 20
