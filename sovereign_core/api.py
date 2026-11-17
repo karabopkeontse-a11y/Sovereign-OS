@@ -2,14 +2,15 @@
 from __future__ import annotations
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-import os, secrets, sqlite3
+import os, secrets, sqlite3, shutil, subprocess, zipfile
 from pathlib import Path
 from uuid import uuid4
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
 from dotenv import load_dotenv
 from .workspaces import WorkspaceService
+from .specialists import specialist_for, specialist_prompt
 
 # Load local provider credentials from the project root without overriding
 # environment variables explicitly supplied by the launching process.
@@ -35,6 +36,11 @@ class ChatInput(BaseModel):
             if len(value) > 6 * 1024 * 1024:
                 raise ValueError("Each image must be 4 MB or smaller.")
         return values
+
+class GroupChatInput(BaseModel):
+    message: str = Field(min_length=1, max_length=12000)
+    conversation_id: str | None = None
+    specialist_ids: list[str] = Field(min_length=2, max_length=4)
 
 class ModelSelectInput(BaseModel):
     provider: str = Field(min_length=1, max_length=80)
@@ -97,10 +103,10 @@ class SovereignAPI:
                            (conversation_id, workspace.id, payload.message[:72], stamp, stamp))
                 db.commit()
             prior = db.execute("SELECT role, content FROM api_messages WHERE conversation_id=? "
-                               "ORDER BY created_at DESC LIMIT 12", (conversation_id,)).fetchall()
+                               "ORDER BY created_at DESC LIMIT " + ("6" if payload.voice_mode else "12"), (conversation_id,)).fetchall()
         finally:
             db.close()
-        memories = self.workspaces.search(workspace.id, payload.message, limit=5)
+        memories = self.workspaces.search(workspace.id, payload.message, limit=2 if payload.voice_mode else 5)
         memory_context = "\n".join("- " + item.content for item in memories)
         assistant_name = "Thothi, the customer-facing SmartFlow BW assistant powered by SovereignOS" if workspace.name == "SmartFlow BW" else "SovereignOS"
         system = ("You are " + assistant_name + " in the " + workspace.name + " workspace. Purpose: "
@@ -108,7 +114,7 @@ class SovereignAPI:
                   "external actions. Financial, publishing, destructive and physical-device actions "
                   "require human approval. Relevant memories:\n" + (memory_context or "(none)"))
         if payload.voice_mode:
-            system += " For voice conversations, respond naturally and concisely, like a helpful person on a live call. Use short spoken sentences, avoid Markdown, tables and decorative symbols, and lead with the useful answer."
+            system += " For voice conversations, optimise for a fast live exchange. Give the direct answer first in one or two short sentences, then pause for the user. Avoid long preambles, Markdown, tables and decorative symbols. Ask at most one concise follow-up question when essential."
         try:
             from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
             messages = [SystemMessage(content=system)]
@@ -126,7 +132,7 @@ class SovereignAPI:
                 messages.append(HumanMessage(content=content))
             else:
                 messages.append(HumanMessage(content=payload.message))
-            response, info, used_index = (router.invoke(messages, max_tokens=320) if payload.voice_mode else router.invoke(messages))
+            response, info, used_index = (router.invoke(messages, max_tokens=192) if payload.voice_mode else router.invoke(messages))
             reply = response.content if hasattr(response, "content") else str(response)
             provider, model = info.provider, info.model
         except Exception as exc:
@@ -147,7 +153,65 @@ class SovereignAPI:
         return {"conversation_id": conversation_id, "workspace_id": workspace.id,
                 "reply": reply, "provider": provider, "model": model,
                 "fallback_used": used_index != getattr(router, "active_index", used_index),
-                "selected_model": selected}
+                "selected_model": selected, "runtime": info.runtime}
+
+
+def create_libreoffice_test_document(workspace_root: Path):
+    """Create one fixed, harmless ODT inside the dedicated agent workspace."""
+    workspace_root = Path(workspace_root).resolve()
+    target_dir = workspace_root / "agent_workspace" / "libreoffice"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target_dir = target_dir.resolve()
+    try:
+        target_dir.relative_to(workspace_root)
+    except ValueError as exc:
+        raise RuntimeError("The LibreOffice test folder resolves outside the SovereignOS agent workspace.") from exc
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    target = (target_dir / f"sovereignos-libreoffice-test-{stamp}.odt").resolve()
+    if target_dir not in target.parents:
+        raise RuntimeError("The test document path escaped the agent workspace.")
+    content = """<?xml version="1.0" encoding="UTF-8"?>
+<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" office:version="1.2">
+ <office:body><office:text>
+  <text:h text:outline-level="1">SovereignOS · LibreOffice integration test</text:h>
+  <text:p>This document was created locally by SovereignOS.</text:p>
+  <text:p>Purpose: verify that the desktop agent can create a document in its own workspace and open it in LibreOffice.</text:p>
+  <text:p>Safety boundary: this test did not read, edit, upload, or share any existing personal files.</text:p>
+  <text:p>Next step: approve a specific file or folder before granting any broader document access.</text:p>
+ </office:text></office:body>
+</office:document-content>"""
+    manifest = """<?xml version="1.0" encoding="UTF-8"?>
+<manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0" manifest:version="1.2">
+ <manifest:file-entry manifest:full-path="/" manifest:media-type="application/vnd.oasis.opendocument.text"/>
+ <manifest:file-entry manifest:full-path="content.xml" manifest:media-type="text/xml"/>
+</manifest:manifest>"""
+    with zipfile.ZipFile(target, "w") as archive:
+        archive.writestr("mimetype", "application/vnd.oasis.opendocument.text", compress_type=zipfile.ZIP_STORED)
+        archive.writestr("content.xml", content, compress_type=zipfile.ZIP_DEFLATED)
+        archive.writestr("META-INF/manifest.xml", manifest, compress_type=zipfile.ZIP_DEFLATED)
+
+    candidates = [shutil.which("soffice"), shutil.which("libreoffice")]
+    if os.name == "nt":
+        for variable in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"):
+            base = os.getenv(variable)
+            if base:
+                candidates.extend([
+                    str(Path(base) / "LibreOffice" / "program" / "soffice.exe"),
+                    str(Path(base) / "Programs" / "LibreOffice" / "program" / "soffice.exe"),
+                ])
+    executable = next((item for item in candidates if item and Path(item).is_file()), None)
+    if not executable:
+        raise FileNotFoundError(
+            "The test document was created in the SovereignOS agent workspace, "
+            "but LibreOffice was not found. Install LibreOffice or add soffice to PATH."
+        )
+    process = subprocess.Popen(
+        [executable, "--writer", "--norestore", "--nodefault", str(target)],
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        shell=False, close_fds=(os.name != "nt"),
+    )
+    return {"file_name": target.name, "opened": True, "process_id": process.pid,
+            "scope": "SovereignOS agent workspace only"}
 
 def create_app(db_path=None, router=None, token=None):
     state = SovereignAPI(db_path or os.getenv("SOVEREIGN_DB_PATH",
@@ -158,7 +222,7 @@ def create_app(db_path=None, router=None, token=None):
         app.state.sovereign = state
         yield
     app = FastAPI(title="SovereignOS API", version="1.0.0", lifespan=lifespan)
-    origins = [x.strip() for x in os.getenv("SOVEREIGN_API_CORS_ORIGINS", "").split(",") if x.strip()]
+    origins = [x.strip() for x in os.getenv("SOVEREIGN_API_CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173,http://localhost:8080,http://127.0.0.1:8080").split(",") if x.strip()]
     if origins:
         app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=False,
                            allow_methods=["GET", "POST"], allow_headers=["Authorization", "Content-Type"])
@@ -169,9 +233,36 @@ def create_app(db_path=None, router=None, token=None):
         if not secrets.compare_digest(supplied, expected_token):
             raise HTTPException(401, "Invalid or missing bearer token")
         return True
+    @app.get("/api/v1/bootstrap")
+    def local_bootstrap(request: Request):
+        # Only the local SovereignOS web clients may obtain the ephemeral session token.
+        client_host = request.client.host if request.client else ""
+        origin = request.headers.get("origin", "")
+        allowed_origins = {
+            "http://localhost:5173", "http://127.0.0.1:5173",
+            "http://localhost:8080", "http://127.0.0.1:8080",
+        }
+        configured = {x.strip() for x in os.getenv("SOVEREIGN_API_CORS_ORIGINS", "").split(",") if x.strip()}
+        if client_host not in {"127.0.0.1", "::1", "localhost"}:
+            raise HTTPException(403, "Local bootstrap is only available on this computer.")
+        if not origin or origin not in (allowed_origins | configured):
+            raise HTTPException(403, "A valid approved local SovereignOS browser origin is required for bootstrap.")
+        return {"api_url": "http://127.0.0.1:" + str(int(os.getenv("SOVEREIGN_API_PORT", "8765"))),
+                "token": expected_token, "mode": "local-desktop"}
+
     @app.get("/api/v1/health")
     def health():
         return {"status": "ok", "service": "SovereignOS API", "version": "1.0.0"}
+    @app.post("/api/v1/desktop/libreoffice/test", dependencies=[Depends(authorize)])
+    def libreoffice_test():
+        try:
+            result = create_libreoffice_test_document(state.db_path.parent)
+            return {"status": "opened", **result}
+        except FileNotFoundError as exc:
+            raise HTTPException(503, str(exc))
+        except Exception as exc:
+            raise HTTPException(500, "LibreOffice test failed: " + type(exc).__name__ + ": " + str(exc))
+
     @app.get("/api/v1/workspaces", dependencies=[Depends(authorize)])
     def list_workspaces():
         return {"workspaces": [{"id": w.id, "name": w.name, "purpose": w.purpose}
@@ -208,6 +299,88 @@ def create_app(db_path=None, router=None, token=None):
     @app.post("/api/v1/workspaces/{workspace_id}/chat", dependencies=[Depends(authorize)])
     def chat(workspace_id: str, payload: ChatInput):
         return state.chat(workspace_id, payload)
+    @app.get("/api/v1/models/specialists", dependencies=[Depends(authorize)])
+    def model_specialists():
+        router_instance = state.get_router()
+        providers = router_instance.health_snapshot()
+        return {"specialists": [
+            {**specialist_for(index, candidate),
+             "status": providers[index].get("status", "connected"),
+             "active": providers[index].get("active", False)}
+            for index, candidate in enumerate(getattr(router_instance, "candidates", []))
+        ], "note": "Specialists are roles assigned to configured models. No additional provider is silently enabled."}
+
+    @app.post("/api/v1/workspaces/{workspace_id}/group-chat", dependencies=[Depends(authorize)])
+    def group_chat(workspace_id: str, payload: GroupChatInput):
+        try:
+            workspace = state.workspaces.get_workspace(workspace_id)
+        except ValueError:
+            raise HTTPException(404, "Workspace not found")
+        router_instance = state.get_router()
+        candidates = getattr(router_instance, "candidates", [])
+        specialists = [specialist_for(i, c) for i, c in enumerate(candidates)]
+        selected = [next((sp for sp in specialists if sp["id"] == sid), None)
+                    for sid in payload.specialist_ids]
+        if any(item is None for item in selected):
+            raise HTTPException(409, "One or more selected Specialists are no longer configured. Refresh Model Health.")
+        db = state.connection()
+        try:
+            conversation_id = payload.conversation_id
+            if conversation_id:
+                owner = db.execute("SELECT id FROM api_conversations WHERE id=? AND workspace_id=?",
+                                   (conversation_id, workspace.id)).fetchone()
+                if owner is None:
+                    raise HTTPException(404, "Conversation not found in this workspace")
+            else:
+                conversation_id = str(uuid4())
+                stamp = now()
+                db.execute("INSERT INTO api_conversations VALUES (?, ?, ?, ?, ?)",
+                           (conversation_id, workspace.id, payload.message[:72], stamp, stamp))
+            prior = db.execute("SELECT role, content FROM api_messages WHERE conversation_id=? "
+                               "ORDER BY created_at DESC LIMIT 12", (conversation_id,)).fetchall()
+            stamp = now()
+            db.execute("INSERT INTO api_messages VALUES (?, ?, ?, ?, ?, ?, ?)",
+                       (str(uuid4()), conversation_id, "user", payload.message, None, None, stamp))
+            db.commit()
+        finally:
+            db.close()
+        try:
+            from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
+            memories = state.workspaces.search(workspace.id, payload.message, limit=5)
+            memory_context = "\n".join("- " + item.content for item in memories) or "(none)"
+            base_messages = []
+            for item in reversed(prior):
+                base_messages.append(HumanMessage(content=item["content"]) if item["role"] == "user"
+                                     else AIMessage(content=item["content"]))
+            base_messages.append(HumanMessage(content=payload.message))
+            results = []
+            for specialist in selected:
+                system = (specialist_prompt(specialist, workspace.name) +
+                          "\nWorkspace purpose: " + workspace.purpose +
+                          "\nRelevant workspace memories:\n" + memory_context)
+                messages = [SystemMessage(content=system), *base_messages]
+                response, info, used_index = router_instance.invoke(
+                    messages, start_index=specialist["index"])
+                reply = response.content if hasattr(response, "content") else str(response)
+                results.append({"specialist": specialist["name"], "role": specialist["role"],
+                                "provider": info.provider, "model": info.model, "reply": reply})
+                base_messages.append(AIMessage(content="[" + specialist["name"] + "] " + str(reply)))
+                db = state.connection()
+                try:
+                    db.execute("INSERT INTO api_messages VALUES (?, ?, ?, ?, ?, ?, ?)",
+                               (str(uuid4()), conversation_id, "assistant",
+                                "[" + specialist["name"] + "] " + str(reply),
+                                info.provider, info.model, now()))
+                    db.execute("UPDATE api_conversations SET updated_at=? WHERE id=?",
+                               (now(), conversation_id))
+                    db.commit()
+                finally:
+                    db.close()
+        except Exception as exc:
+            raise HTTPException(503, "Group session incomplete: " + type(exc).__name__ + ": " + str(exc))
+        return {"conversation_id": conversation_id, "workspace_id": workspace.id,
+                "responses": results, "specialists": [item["id"] for item in selected]}
+
     @app.get("/api/v1/models/health", dependencies=[Depends(authorize)])
     def model_health():
         router_instance = state.get_router()

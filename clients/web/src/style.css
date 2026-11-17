@@ -373,3 +373,46 @@ body[data-core-state="speaking"] .orb-ring{border-color:#20cfff;filter:brightnes
 @media(max-width:520px){
   .composer-row textarea,#message{height:44px!important;min-height:44px!important;max-height:100px!important}
 }
+
+/* Specialist collective and persistent conversation history */
+.specialist-panel{margin-top:18px}.specialist-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:9px;margin:12px 0 18px}
+.specialist-option{display:flex;align-items:center;gap:11px;padding:13px;border:1px solid #2c4261;border-radius:13px;background:linear-gradient(140deg,#14243a,#0b1729);cursor:pointer}
+.specialist-option:has(input:checked){border-color:#55c9d8;box-shadow:0 0 20px #46b8d522}
+.specialist-option input{accent-color:#63d9d2;width:17px;height:17px}.specialist-option b,.specialist-option small{display:block}.specialist-option small{color:#8fa5c2;margin-top:4px;overflow-wrap:anywhere}
+.specialist-mission-label{display:block;color:#9fc3df;font-size:10px;letter-spacing:.16em;margin:12px 0 7px}
+#group-mission{width:100%;resize:vertical;min-height:74px;background:#071426;border:1px solid #304b6d;border-radius:12px;padding:12px;color:#e6f1ff;font:inherit}
+#run-group-chat{margin-top:10px}.group-chat-output{display:grid;gap:10px;margin-top:14px}
+.specialist-response{padding:15px;border:1px solid #2a4967;border-radius:13px;background:linear-gradient(135deg,#10243a,#0a1729)}
+.specialist-response b{color:#7de1dc}.specialist-response p{white-space:pre-wrap;line-height:1.6;margin:9px 0 0}
+.conversation-history-rail{display:flex;gap:7px;overflow:auto;padding:4px 0 12px;border-bottom:1px solid #263c58}
+.conversation-history-rail .history-item{width:auto;white-space:nowrap;padding:7px 11px;border:1px solid #30445f;border-radius:20px}
+.conversation-history-rail .history-active{border-color:#6bd8dc;background:#15374b}
+@media(max-width:600px){.specialist-list{grid-template-columns:1fr}}
+
+
+/* Composer repair: stable compact input with a real editable surface. */
+#view-chat .chatpanel{min-height:0!important;min-width:0}
+#view-chat .composer{flex:0 0 auto;min-width:0;max-height:none;overflow:visible}
+#view-chat .composer-row{display:flex!important;flex-direction:row!important;align-items:flex-end!important;gap:9px!important;min-width:0}
+#view-chat .composer-row textarea#message{display:block;flex:1 1 auto!important;width:auto!important;min-width:0!important;height:54px!important;min-height:54px!important;max-height:160px!important;padding:13px 12px!important;resize:none!important;overflow-y:auto!important;line-height:1.45!important;box-sizing:border-box!important;border:1px solid #234765!important;border-radius:12px!important;background:#071426!important;color:#f1fbff!important}
+#view-chat .composer-row textarea#message:focus{border-color:#31c9ed!important;box-shadow:0 0 0 2px #20cfff18!important}
+#view-chat .composer-row #attach-image{flex:0 0 42px!important;min-width:42px!important;width:42px!important;height:46px!important}
+#view-chat .composer-row #send-button{flex:0 0 104px!important;min-width:104px!important;height:46px!important;min-height:46px!important}
+#view-chat .visual-privacy-note{display:block;margin:5px 2px 3px;color:#9bb4ca;font-size:10px;line-height:1.45}
+@media(max-width:520px){#view-chat .composer-row{flex-direction:row!important}#view-chat .composer-row #send-button{flex-basis:76px!important;min-width:76px!important}#view-chat .composer-row textarea#message{height:48px!important;min-height:48px!important}}
+
+/* Final compact composer sizing: reserve the conversation area and keep a readable typing surface. */
+#view-chat .composer{display:flex!important;flex-direction:column!important;gap:6px!important;padding:9px 12px!important}
+#view-chat .composer-row{align-items:center!important;min-height:52px!important}
+#view-chat .composer-row textarea#message{flex:1 1 0!important;width:100%!important;height:50px!important;min-height:50px!important;max-height:132px!important;padding:11px 12px!important;line-height:1.4!important;align-self:center!important}
+#view-chat .visual-privacy-note{max-width:100%;font-size:9px;line-height:1.35;margin:2px 2px 4px}
+#run-libreoffice-test{margin-top:10px}
+
+
+/* Final composer correction: the textarea must flex within the row, not claim the row's full width. */
+#view-chat .composer{width:calc(100% - 28px)!important;max-width:900px!important;min-width:0!important;flex:0 0 auto!important;}
+#view-chat .composer-row{display:flex!important;flex-direction:row!important;align-items:center!important;gap:9px!important;width:100%!important;min-width:0!important;}
+#view-chat .composer-row textarea#message{display:block!important;flex:1 1 0!important;flex-basis:0!important;width:0!important;min-width:0!important;height:50px!important;min-height:50px!important;max-height:132px!important;padding:11px 12px!important;resize:none!important;overflow-y:auto!important;line-height:1.4!important;align-self:stretch!important;}
+#view-chat .composer-row #attach-image{flex:0 0 42px!important;width:42px!important;min-width:42px!important;height:46px!important;}
+#view-chat .composer-row #send-button{flex:0 0 104px!important;width:104px!important;min-width:104px!important;height:46px!important;min-height:46px!important;}
+@media(max-width:520px){#view-chat .composer{width:calc(100% - 12px)!important;padding:9px!important;}#view-chat .composer-row{flex-direction:row!important;gap:6px!important;}#view-chat .composer-row textarea#message{width:0!important;flex:1 1 0!important;height:46px!important;min-height:46px!important;}#view-chat .composer-row #send-button{flex-basis:76px!important;width:76px!important;min-width:76px!important;padding:9px 6px!important;}}

@@ -64,6 +64,10 @@ import json
 import time
 import asyncio
 import threading
+import socket
+import secrets
+import shutil
+import subprocess
 import tempfile
 import urllib.parse
 import urllib.request
@@ -1405,6 +1409,9 @@ ui.add_head_html(HEAD_HTML, shared=True)
 
 @ui.page("/")
 def main_page():
+    # Compatibility entry point: always open the single, upgraded Vite client.
+    ui.run_javascript("window.location.replace('http://127.0.0.1:5173/')")
+    return
     client = ui.context.client
     default_workspace = next((w for w in WORKSPACES if w.name == "SovereignOS"), WORKSPACES[0])
     state = {
@@ -1934,7 +1941,125 @@ def main_page():
 # ENTRYPOINT
 # ─────────────────────────────────────────────────────────────────────────────
 
+def start_web_client():
+    """Start or reuse the single Vite interface used by every desktop entry point."""
+    web_dir = BASE_DIR / "clients" / "web"
+    if not (web_dir / "package.json").is_file():
+        raise RuntimeError("SovereignOS web client is missing from clients/web.")
+
+    def ready():
+        try:
+            with urllib.request.urlopen("http://127.0.0.1:5173/", timeout=2) as response:
+                page = response.read(40000).decode("utf-8", errors="replace")
+                required_markers = (
+                    'id="view-overview"',
+                    'id="view-chat"',
+                    'id="view-call"',
+                    'id="run-libreoffice-test"',
+                    "SovereignOS · 2030 Intelligence",
+                )
+                return response.status == 200 and all(marker in page for marker in required_markers)
+        except Exception:
+            return False
+
+    if ready():
+        print("SovereignOS unified interface already running at http://127.0.0.1:5173/.")
+        return None
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        probe.bind(("127.0.0.1", 5173))
+    except OSError as exc:
+        raise RuntimeError("Port 5173 is occupied by a service that is not the SovereignOS web client.") from exc
+    finally:
+        probe.close()
+    npm = shutil.which("npm.cmd") or shutil.which("npm")
+    if not npm:
+        raise RuntimeError("Node.js/npm is required to launch SovereignOS. Install Node.js once, then relaunch.")
+    vite_args = "run dev -- --host 127.0.0.1 --port 5173 --strictPort"
+    if os.name == "nt" and npm.casefold().endswith((".cmd", ".bat")):
+        # Batch files must be invoked through CALL from cmd.exe, including paths with spaces.
+        command = [
+            os.environ.get("COMSPEC", "cmd.exe"),
+            "/d", "/c",
+            'call "' + npm + '" ' + vite_args,
+        ]
+    else:
+        command = [npm, *vite_args.split()]
+
+    # Preserve startup diagnostics instead of discarding npm/Vite's error output.
+    vite_log_dir = BASE_DIR / "sovereign_workspace" / "logs"
+    vite_log_dir.mkdir(parents=True, exist_ok=True)
+    vite_log_path = vite_log_dir / "vite-startup.log"
+    vite_log = open(vite_log_path, "a", encoding="utf-8")
+    try:
+        process = subprocess.Popen(
+            command, cwd=str(web_dir), stdout=vite_log, stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    finally:
+        vite_log.close()
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline:
+        if ready():
+            print("SovereignOS unified interface ready at http://127.0.0.1:5173/.")
+            return process
+        if process.poll() is not None:
+            raise RuntimeError(
+                "Vite stopped during startup. Check the diagnostic log at "
+                + str(vite_log_path) + " for the actual npm/Vite error."
+            )
+        time.sleep(0.25)
+    raise RuntimeError("SovereignOS web interface did not become ready on port 5173.")
+
+def start_embedded_api():
+    """Start the authenticated REST API beside the desktop, sharing its live model router."""
+    try:
+        import uvicorn
+        from sovereign_core.api import create_app
+    except ImportError as exc:
+        raise RuntimeError(
+            "SovereignOS API runtime is missing. Install requirements_sovereign.txt once."
+        ) from exc
+
+    host = "127.0.0.1"
+    preferred_port = int(os.getenv("SOVEREIGN_API_PORT", "8765"))
+    port = None
+    for candidate_port in range(preferred_port, preferred_port + 20):
+        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            probe.bind((host, candidate_port))
+            port = candidate_port
+            break
+        except OSError:
+            continue
+        finally:
+            probe.close()
+    if port is None:
+        raise RuntimeError("No free local API port found between the configured port and the next 19 ports.")
+    os.environ["SOVEREIGN_API_PORT"] = str(port)
+    token = os.getenv("SOVEREIGN_API_TOKEN", "").strip() or secrets.token_urlsafe(32)
+    api_app = create_app(db_path=WORKSPACE_DB, router=MODEL_ROUTER, token=token)
+    config = uvicorn.Config(api_app, host=host, port=port, log_level="warning",
+                            access_log=False, loop="asyncio")
+    server = uvicorn.Server(config)
+    thread = threading.Thread(target=server.run, name="SovereignOS-API", daemon=True)
+    thread.start()
+
+    # Fail fast on a port collision instead of silently opening a broken desktop.
+    deadline = time.monotonic() + 12
+    while time.monotonic() < deadline:
+        if server.started:
+            print(f"SovereignOS API ready at http://{host}:{port} (shared desktop model router).")
+            return server
+        if not thread.is_alive():
+            raise RuntimeError(f"SovereignOS API could not start on {host}:{port}. Check whether another service is using this port.")
+        time.sleep(0.15)
+    raise RuntimeError(f"SovereignOS API startup timed out on {host}:{port}.")
+
+
 if __name__ in {"__main__", "__mp_main__"}:
+    web_client_process = start_web_client()
+    embedded_api = start_embedded_api()
     if not MODEL_ROUTER.candidates:
         print("WARNING: No model configured. Add GROQ_API_KEY, OPENROUTER_API_KEY, or configure OLLAMA_MODEL.")
     # Prefer a real native desktop window when PyWebView is installed. Keep a
