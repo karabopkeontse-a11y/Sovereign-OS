@@ -1950,8 +1950,15 @@ def start_web_client():
     def ready():
         try:
             with urllib.request.urlopen("http://127.0.0.1:5173/", timeout=2) as response:
-                page = response.read(20000).decode("utf-8", errors="replace")
-                return response.status == 200 and "SovereignOS" in page
+                page = response.read(40000).decode("utf-8", errors="replace")
+                required_markers = (
+                    'id="view-overview"',
+                    'id="view-chat"',
+                    'id="view-call"',
+                    'id="run-libreoffice-test"',
+                    "SovereignOS · 2030 Intelligence",
+                )
+                return response.status == 200 and all(marker in page for marker in required_markers)
         except Exception:
             return False
 
@@ -1970,20 +1977,37 @@ def start_web_client():
         raise RuntimeError("Node.js/npm is required to launch SovereignOS. Install Node.js once, then relaunch.")
     vite_args = "run dev -- --host 127.0.0.1 --port 5173 --strictPort"
     if os.name == "nt" and npm.casefold().endswith((".cmd", ".bat")):
-        command = [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/s", "/c", '"' + npm + '" ' + vite_args]
+        # Batch files must be invoked through CALL from cmd.exe, including paths with spaces.
+        command = [
+            os.environ.get("COMSPEC", "cmd.exe"),
+            "/d", "/c",
+            'call "' + npm + '" ' + vite_args,
+        ]
     else:
         command = [npm, *vite_args.split()]
-    process = subprocess.Popen(
-        command, cwd=str(web_dir), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        stdin=subprocess.DEVNULL, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    )
+
+    # Preserve startup diagnostics instead of discarding npm/Vite's error output.
+    vite_log_dir = BASE_DIR / "sovereign_workspace" / "logs"
+    vite_log_dir.mkdir(parents=True, exist_ok=True)
+    vite_log_path = vite_log_dir / "vite-startup.log"
+    vite_log = open(vite_log_path, "a", encoding="utf-8")
+    try:
+        process = subprocess.Popen(
+            command, cwd=str(web_dir), stdout=vite_log, stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    finally:
+        vite_log.close()
     deadline = time.monotonic() + 20
     while time.monotonic() < deadline:
         if ready():
             print("SovereignOS unified interface ready at http://127.0.0.1:5173/.")
             return process
         if process.poll() is not None:
-            raise RuntimeError("Vite stopped during startup. Run npm install inside clients/web, then relaunch.")
+            raise RuntimeError(
+                "Vite stopped during startup. Check the diagnostic log at "
+                + str(vite_log_path) + " for the actual npm/Vite error."
+            )
         time.sleep(0.25)
     raise RuntimeError("SovereignOS web interface did not become ready on port 5173.")
 
