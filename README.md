@@ -10,6 +10,10 @@ Run the Windows desktop/NiceGUI client with Python 3.11 and the project's existi
 py -3.11 sovereign_os_ultimate.py
 ```
 
+The desktop client now uses the same `clients/web/public/sovereign-os-mark.svg` master asset as the web/PWA/Capacitor surface. Its 2050 shell adds a glass command dock, live local clock, Ctrl+K command palette, shared workspace/model/memory actions, and an animated orbital core that changes state during listening, thinking and speech. The command surface is a UI layer over the existing desktop assistant; it does not create a second model router or separate workspace database.
+
+The current desktop launch still uses NiceGUI's browser-hosted window (`native=False`). A signed native Windows installer, Linux package and background service are separate packaging milestones and are not claimed by this UI upgrade.
+
 ## New REST API and web client
 
 See [API and platform milestone](docs/NEXT_TEN_OBJECTIVES.md) and [web/PWA/Android guide](clients/web/README.md).
