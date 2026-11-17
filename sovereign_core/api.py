@@ -158,8 +158,14 @@ class SovereignAPI:
 
 def create_libreoffice_test_document(workspace_root: Path):
     """Create one fixed, harmless ODT inside the dedicated agent workspace."""
-    target_dir = (Path(workspace_root).resolve() / "agent_workspace" / "libreoffice").resolve()
+    workspace_root = Path(workspace_root).resolve()
+    target_dir = workspace_root / "agent_workspace" / "libreoffice"
     target_dir.mkdir(parents=True, exist_ok=True)
+    target_dir = target_dir.resolve()
+    try:
+        target_dir.relative_to(workspace_root)
+    except ValueError as exc:
+        raise RuntimeError("The LibreOffice test folder resolves outside the SovereignOS agent workspace.") from exc
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     target = (target_dir / f"sovereignos-libreoffice-test-{stamp}.odt").resolve()
     if target_dir not in target.parents:
@@ -239,8 +245,8 @@ def create_app(db_path=None, router=None, token=None):
         configured = {x.strip() for x in os.getenv("SOVEREIGN_API_CORS_ORIGINS", "").split(",") if x.strip()}
         if client_host not in {"127.0.0.1", "::1", "localhost"}:
             raise HTTPException(403, "Local bootstrap is only available on this computer.")
-        if origin and origin not in (allowed_origins | configured):
-            raise HTTPException(403, "Origin is not an approved local SovereignOS client.")
+        if not origin or origin not in (allowed_origins | configured):
+            raise HTTPException(403, "A valid approved local SovereignOS browser origin is required for bootstrap.")
         return {"api_url": "http://127.0.0.1:" + str(int(os.getenv("SOVEREIGN_API_PORT", "8765"))),
                 "token": expected_token, "mode": "local-desktop"}
 
