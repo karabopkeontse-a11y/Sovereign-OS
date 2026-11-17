@@ -10,7 +10,7 @@ WHAT THIS FILE FIXES (see the numbered sections below):
   4. Clickable Recent Files -> glass-morphism modal (Refine with AI / Download / Close),
      now rendering images/video/docx/pdf, not just plain text
   5. Instant vanilla-JS drag & drop media preview, auto-fit + double-click full view
-  6. Real window controls via native=False
+  6. Optional native desktop window with browser fallback
 
 LATEST ROUND OF CHANGES:
   - Mic recording can now be stopped mid-way (tap the mic again) instead of waiting
@@ -58,6 +58,7 @@ IMPORTANT — please read:
 """
 
 import os
+import importlib.util
 import re
 import json
 import time
@@ -1837,6 +1838,7 @@ def main_page():
         command_results = ui.column().classes("w-full")
         desktop_commands = [
             ("Open Intelligence", "Focus the message composer", lambda: message_input.run_method("focus")),
+            ("Switch workspace", "Choose a different isolated workspace", lambda: workspace_select.run_method("focus")),
             ("Start voice capture", "Use the desktop microphone", lambda: on_mic_click()),
             ("Open Memory Vault", "Inspect workspace-scoped memory", lambda: open_memory_panel()),
             ("Model health", "Inspect configured providers and routing", lambda: open_model_health()),
@@ -1885,11 +1887,28 @@ def main_page():
 if __name__ in {"__main__", "__mp_main__"}:
     if not MODEL_ROUTER.candidates:
         print("WARNING: No model configured. Add GROQ_API_KEY, OPENROUTER_API_KEY, or configure OLLAMA_MODEL.")
+    # Prefer a real native desktop window when PyWebView is installed. Keep a
+    # deterministic browser fallback so existing installations never stop launching.
+    native_setting = os.getenv("SOVEREIGN_NATIVE_WINDOW", "auto").strip().casefold()
+    webview_available = importlib.util.find_spec("webview") is not None
+    valid_native_settings = {"auto", "1", "true", "yes", "on", "0", "false", "no", "off"}
+    native_mode = webview_available if native_setting == "auto" else native_setting in {"1", "true", "yes", "on"}
+    if native_setting not in valid_native_settings:
+        print(f"Unrecognised SOVEREIGN_NATIVE_WINDOW={native_setting!r}; using browser mode.")
+        native_mode = False
+    if native_mode and not webview_available:
+        print("Native window requested but PyWebView is missing. Install requirements-desktop-native.txt; opening browser mode instead.")
+        native_mode = False
+
+    print("Launching SovereignOS native desktop shell." if native_mode
+          else "Launching SovereignOS in local browser mode.")
     ui.run(
-        title="Sovereign OS",
-        native=False,          # FIX 6: real browser window -> minimize/maximize/close all present
+        title="SovereignOS",
+        native=native_mode,
+        window_size=(1440, 900) if native_mode else None,
+        host="127.0.0.1",
         reload=False,
         port=8080,
         dark=True,
-        show=True,
+        show=not native_mode,
     )
