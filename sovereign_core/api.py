@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
 from dotenv import load_dotenv
 from .workspaces import WorkspaceService
+from .specialists import specialist_for, specialist_prompt
 
 # Load local provider credentials from the project root without overriding
 # environment variables explicitly supplied by the launching process.
@@ -35,6 +36,11 @@ class ChatInput(BaseModel):
             if len(value) > 6 * 1024 * 1024:
                 raise ValueError("Each image must be 4 MB or smaller.")
         return values
+
+class GroupChatInput(BaseModel):
+    message: str = Field(min_length=1, max_length=12000)
+    conversation_id: str | None = None
+    specialist_ids: list[str] = Field(min_length=2, max_length=4)
 
 class ModelSelectInput(BaseModel):
     provider: str = Field(min_length=1, max_length=80)
@@ -208,6 +214,87 @@ def create_app(db_path=None, router=None, token=None):
     @app.post("/api/v1/workspaces/{workspace_id}/chat", dependencies=[Depends(authorize)])
     def chat(workspace_id: str, payload: ChatInput):
         return state.chat(workspace_id, payload)
+    @app.get("/api/v1/models/specialists", dependencies=[Depends(authorize)])
+    def model_specialists():
+        router_instance = state.get_router()
+        providers = router_instance.health_snapshot()
+        return {"specialists": [
+            {**specialist_for(index, candidate),
+             "status": providers[index].get("status", "connected"),
+             "active": providers[index].get("active", False)}
+            for index, candidate in enumerate(getattr(router_instance, "candidates", []))
+        ], "note": "Specialists are roles assigned to configured models. No additional provider is silently enabled."}
+
+    @app.post("/api/v1/workspaces/{workspace_id}/group-chat", dependencies=[Depends(authorize)])
+    def group_chat(workspace_id: str, payload: GroupChatInput):
+        try:
+            workspace = state.workspaces.get_workspace(workspace_id)
+        except ValueError:
+            raise HTTPException(404, "Workspace not found")
+        router_instance = state.get_router()
+        candidates = getattr(router_instance, "candidates", [])
+        specialists = [specialist_for(i, c) for i, c in enumerate(candidates)]
+        selected = [next((sp for sp in specialists if sp["id"] == sid), None)
+                    for sid in payload.specialist_ids]
+        if any(item is None for item in selected):
+            raise HTTPException(409, "One or more selected Specialists are no longer configured. Refresh Model Health.")
+        db = state.connection()
+        try:
+            conversation_id = payload.conversation_id
+            if conversation_id:
+                owner = db.execute("SELECT id FROM api_conversations WHERE id=? AND workspace_id=?",
+                                   (conversation_id, workspace.id)).fetchone()
+                if owner is None:
+                    raise HTTPException(404, "Conversation not found in this workspace")
+            else:
+                conversation_id = str(uuid4())
+                stamp = now()
+                db.execute("INSERT INTO api_conversations VALUES (?, ?, ?, ?, ?)",
+                           (conversation_id, workspace.id, payload.message[:72], stamp, stamp))
+            prior = db.execute("SELECT role, content FROM api_messages WHERE conversation_id=? "
+                               "ORDER BY created_at DESC LIMIT 12", (conversation_id,)).fetchall()
+            stamp = now()
+            db.execute("INSERT INTO api_messages VALUES (?, ?, ?, ?, ?, ?, ?)",
+                       (str(uuid4()), conversation_id, "user", payload.message, None, None, stamp))
+            db.commit()
+        finally:
+            db.close()
+        try:
+            from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
+            memories = state.workspaces.search(workspace.id, payload.message, limit=5)
+            memory_context = "\n".join("- " + item.content for item in memories) or "(none)"
+            base_messages = []
+            for item in reversed(prior):
+                base_messages.append(HumanMessage(content=item["content"]) if item["role"] == "user"
+                                     else AIMessage(content=item["content"]))
+            base_messages.append(HumanMessage(content=payload.message))
+            results = []
+            for specialist in selected:
+                system = (specialist_prompt(specialist, workspace.name) +
+                          "\nWorkspace purpose: " + workspace.purpose +
+                          "\nRelevant workspace memories:\n" + memory_context)
+                messages = [SystemMessage(content=system), *base_messages]
+                response, info, used_index = router_instance.invoke(
+                    messages, start_index=specialist["index"])
+                reply = response.content if hasattr(response, "content") else str(response)
+                results.append({"specialist": specialist["name"], "role": specialist["role"],
+                                "provider": info.provider, "model": info.model, "reply": reply})
+                db = state.connection()
+                try:
+                    db.execute("INSERT INTO api_messages VALUES (?, ?, ?, ?, ?, ?, ?)",
+                               (str(uuid4()), conversation_id, "assistant",
+                                "[" + specialist["name"] + "] " + str(reply),
+                                info.provider, info.model, now()))
+                    db.execute("UPDATE api_conversations SET updated_at=? WHERE id=?",
+                               (now(), conversation_id))
+                    db.commit()
+                finally:
+                    db.close()
+        except Exception as exc:
+            raise HTTPException(503, "Group session incomplete: " + type(exc).__name__ + ": " + str(exc))
+        return {"conversation_id": conversation_id, "workspace_id": workspace.id,
+                "responses": results, "specialists": [item["id"] for item in selected]}
+
     @app.get("/api/v1/models/health", dependencies=[Depends(authorize)])
     def model_health():
         router_instance = state.get_router()
