@@ -18,25 +18,23 @@ document.querySelectorAll("[data-go]").forEach(b=>b.onclick=()=>view(b.dataset.g
 function renderWorkspaces(){const s=el("workspace");s.replaceChildren();workspaces.forEach(w=>{const o=document.createElement("option");o.value=w.id;o.textContent=w.name;s.append(o)});s.value=active;const w=workspaces.find(x=>x.id===active);el("active").textContent=w?.name||"Not connected";el("chat-title").textContent=w?.name==="SmartFlow BW"?"Thothi · SmartFlow BW":"SovereignOS · "+(w?.name||"Workspace");if(el("intel-presence"))el("intel-presence").textContent=w?w.purpose:"No active workspace selected";el("workspace-list").replaceChildren(...workspaces.map(w=>{const d=document.createElement("div");d.className="workspace-row";const b=document.createElement("b");b.textContent=w.name;const p=document.createElement("small");p.textContent=w.purpose;d.append(b,p);return d;}));}
 async function autoConnectLocal(){
  const feedback=el("settings-feedback");
- for(let attempt=0;attempt<16;attempt++){
-  try{
-   const response=await fetch("http://127.0.0.1:8765/api/v1/bootstrap",{cache:"no-store"});
-   if(!response.ok)throw Error("Local bootstrap unavailable");
-   const session=await response.json();
-   if(!session.api_url||!session.token)throw Error("Local session configuration is incomplete.");
-   base=session.api_url;token=session.token;
-   if(el("api-url"))el("api-url").value=base;
-   if(el("api-token"))el("api-token").value=token;
-   await connect();
-   return;
-  }catch(error){
-   if(attempt===15){
-    if(feedback)feedback.textContent="Local SovereignOS service was not detected. Launch SovereignOS from its desktop launcher; manual API setup is not required for the local desktop.";
-    return;
-   }
-   await new Promise(resolve=>setTimeout(resolve,650));
+ const preferred=Number(new URLSearchParams(location.search).get("apiPort"))||8765;
+ const ports=[...Array(20)].map((_,i)=>preferred+i);
+ for(let attempt=0;attempt<12;attempt++){
+  for(const port of ports){
+   try{
+    const response=await fetch("http://127.0.0.1:"+port+"/api/v1/bootstrap",{cache:"no-store"});
+    if(!response.ok)continue;
+    const session=await response.json();
+    if(!session.api_url||!session.token)continue;
+    base=session.api_url;token=session.token;
+    await connect();
+    if(apiConnected){if(feedback)feedback.textContent="Connected automatically to the local SovereignOS intelligence core.";return;}
+   }catch(_error){}
   }
+  await new Promise(resolve=>setTimeout(resolve,500));
  }
+ if(feedback)feedback.textContent="Local SovereignOS engine not detected. Close duplicate SovereignOS windows and relaunch the desktop. No token entry is required.";
 }
 async function connect(){
  const button=el("save");
@@ -44,7 +42,7 @@ async function connect(){
  setBusy(button,true,"Connecting…");
  el("settings-feedback").textContent="Checking API and authenticating…";
  try{
-  if(!base||!token)throw Error("Enter the API URL and bearer token first.");
+  if(!base||!token)throw Error("Local SovereignOS engine has not supplied its automatic session. Relaunch the desktop application.");
   const h=await fetch(base.replace(/\/$/,"")+"/api/v1/health");
   if(!h.ok)throw Error("API health check failed (HTTP "+h.status+")");
   const ws=await api("/api/v1/workspaces");
