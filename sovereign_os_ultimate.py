@@ -1165,6 +1165,56 @@ body{
  .sovereign-core-avatar,.sovereign-core-orbit{animation:none!important}
 }
 
+
+/* ── 2050 intelligence workspace: visual system upgrade ────────────────── */
+:root{
+  --bg:#030918;--panel:rgba(8,22,43,.78);--panel-border:rgba(88,173,218,.18);
+  --accent-gold:#e9bd72;--accent-teal:#52d9ee;--text:#eaf5ff;--text-muted:#8ea9c2;
+}
+html,body,.nicegui-content{min-height:100%;background:#030918!important}
+body{background:radial-gradient(ellipse at 70% 4%,rgba(20,91,137,.22),transparent 38%),radial-gradient(ellipse at 12% 78%,rgba(16,49,93,.18),transparent 42%),#030918!important}
+.app-header{position:sticky;top:0;z-index:20;min-height:76px;padding:12px 28px 12px 34px!important;gap:14px!important;background:rgba(3,12,27,.82)!important;border-bottom:1px solid rgba(86,175,222,.16)!important;backdrop-filter:blur(24px)!important}
+.desktop-brand{display:flex;align-items:center;gap:13px;min-width:250px}
+.desktop-brand-mark{width:48px!important;height:48px!important;object-fit:contain;background:transparent!important;border:0!important;box-shadow:none!important}
+.app-title{font-size:16px!important;letter-spacing:.16em!important;font-weight:700!important;color:#edf8ff!important}
+.app-title-accent{color:#69d9ed!important}
+.app-title small{display:block;margin-top:4px;font-size:8px;letter-spacing:.25em;color:#789bb8}
+.status-indicator{font-size:10px!important;letter-spacing:.1em;padding:7px 12px!important;background:rgba(36,204,170,.08)!important;border:1px solid rgba(58,221,190,.2)!important;color:#78e4c9!important}
+.app-header .q-btn,.app-header .q-field{border-radius:12px!important}
+.app-body{min-height:calc(100vh - 78px);height:calc(100vh - 78px);padding:22px 26px 94px 112px!important;gap:20px!important;align-items:stretch!important;overflow:hidden}
+.chat-panel{height:100%!important;min-width:0!important;flex:1 1 auto!important;padding:0!important;gap:0!important;overflow:hidden;border:1px solid rgba(92,174,220,.19)!important;border-radius:24px!important;background:linear-gradient(155deg,rgba(10,29,53,.94),rgba(4,14,30,.96))!important;box-shadow:0 24px 80px rgba(0,0,0,.36),inset 0 1px rgba(255,255,255,.035)!important}
+.chat-panel:before{content:"INTELLIGENCE STREAM  /  ENCRYPTED WORKSPACE";display:block;flex:0 0 auto;padding:19px 24px 15px;color:#7fa9c8;font:600 9px 'IBM Plex Sans',sans-serif;letter-spacing:.22em;border-bottom:1px solid rgba(94,168,211,.13)}
+.chat-log{padding:24px 26px 20px!important;gap:16px!important;min-height:0;scrollbar-width:thin;scrollbar-color:rgba(74,174,220,.32) transparent}
+.chat-bubble{max-width:min(82%,820px)!important;padding:15px 18px!important;border-radius:18px!important;line-height:1.62!important;font-size:14px!important;white-space:pre-wrap;overflow-wrap:anywhere}
+.chat-bubble-user{align-self:flex-end!important;background:linear-gradient(135deg,rgba(17,111,166,.36),rgba(21,65,112,.42))!important;border:1px solid rgba(75,189,231,.25)!important;color:#eaf8ff!important;border-bottom-right-radius:6px!important}
+.chat-bubble-assistant{align-self:flex-start!important;background:rgba(8,28,49,.76)!important;border:1px solid rgba(109,169,205,.16)!important;color:#dcecf8!important;border-bottom-left-radius:6px!important;box-shadow:0 10px 34px rgba(0,0,0,.14)}
+.chat-input-row{flex:0 0 auto!important;align-items:center!important;gap:10px!important;margin:0 20px 20px!important;padding:10px 11px 10px 17px!important;width:calc(100% - 40px)!important;border:1px solid rgba(74,179,224,.28)!important;border-radius:20px!important;background:rgba(3,16,33,.94)!important;box-shadow:0 12px 38px rgba(0,0,0,.25),0 0 30px rgba(32,143,196,.07)!important}
+.chat-input{flex:1 1 auto!important;min-width:0!important}
+.chat-input .q-field__control{min-height:48px!important;background:transparent!important;border:0!important;box-shadow:none!important}
+.chat-input .q-field__native{font-size:14px!important;color:#eff9ff!important;padding:12px 2px!important}
+.chat-input .q-field__native::placeholder{color:#7795ae!important}
+.chat-input .q-field__control:before,.chat-input .q-field__control:after{display:none!important}
+.icon-button{width:46px!important;height:46px!important;min-height:46px!important;border-radius:14px!important;background:linear-gradient(145deg,#137aa9,#12507f)!important;color:#e8faff!important;box-shadow:0 5px 18px rgba(14,123,174,.22)!important}
+.icon-button .q-icon{font-size:20px!important}
+.side-panel{flex:0 0 300px!important;min-width:260px!important;max-width:320px!important;gap:14px!important;overflow-y:auto;scrollbar-width:thin}
+.side-panel>.glass-panel,.files-panel{border:1px solid rgba(87,166,213,.17)!important;border-radius:22px!important;background:linear-gradient(150deg,rgba(8,27,49,.88),rgba(4,15,31,.94))!important;box-shadow:0 18px 50px rgba(0,0,0,.22)!important}
+.side-panel .avatar-stage{min-height:275px!important;padding:22px 10px!important}
+.sovereign-core-caption{font-size:9px!important;letter-spacing:.25em!important;color:#88b3d1!important}
+.sovereign-core-caption span{color:#69e2c4!important}
+.sovereign-master-mark{background:transparent!important;border:0!important;box-shadow:none!important;object-fit:contain}
+.files-panel{padding:17px!important}
+.panel-title{font-size:11px!important;letter-spacing:.18em!important;color:#b6d7ed!important;text-transform:uppercase}
+.drop-zone{border:1px dashed rgba(77,176,220,.3)!important;border-radius:16px!important;background:rgba(15,61,91,.16)!important;color:#89abc4!important}
+.sovereign-desktop-dock{left:18px!important;top:50%!important;bottom:auto!important;transform:translateY(-50%)!important;width:76px!important;max-width:76px!important;flex-direction:column!important;gap:8px!important;padding:12px 8px!important;border-radius:23px!important;background:linear-gradient(180deg,rgba(7,29,52,.96),rgba(3,13,29,.97))!important;border:1px solid rgba(69,170,219,.24)!important;box-shadow:0 22px 70px rgba(0,0,0,.48),0 0 32px rgba(17,128,189,.12)!important}
+.sovereign-desktop-dock .q-btn{width:58px!important;min-height:56px!important;padding:5px 2px!important;display:flex!important;flex-direction:column!important;gap:3px!important;border-radius:15px!important;font-size:9px!important;letter-spacing:.02em!important;color:#a9c9e0!important}
+.sovereign-desktop-dock .q-btn .q-icon{font-size:21px!important;color:#61d5eb!important}
+.sovereign-desktop-dock .q-btn:hover{background:rgba(31,139,190,.2)!important;color:#fff!important}
+.desktop-system-clock{display:none!important}
+.sovereign-command-palette{border-radius:22px!important;box-shadow:0 30px 100px rgba(0,0,0,.65)!important}
+@media(max-width:1100px){.side-panel{flex-basis:250px!important;min-width:230px!important}.app-body{padding-left:104px!important;padding-right:16px!important}}
+@media(max-width:850px){.app-header{padding:10px 14px!important;flex-wrap:wrap!important}.app-body{height:auto!important;min-height:calc(100vh - 70px);overflow:visible!important;flex-wrap:wrap!important;padding:14px 12px 92px 12px!important}.chat-panel{height:72vh!important;min-height:540px!important;width:100%!important;flex:1 1 100%!important}.side-panel{width:100%!important;max-width:none!important;flex-direction:row!important;flex-wrap:wrap!important;overflow:visible!important}.side-panel>.glass-panel,.files-panel{flex:1 1 260px!important}.sovereign-desktop-dock{left:50%!important;top:auto!important;bottom:10px!important;transform:translateX(-50%)!important;width:auto!important;max-width:calc(100vw - 20px)!important;flex-direction:row!important;border-radius:18px!important}.sovereign-desktop-dock .q-btn{width:auto!important;min-width:48px!important;min-height:48px!important;padding:4px 8px!important}.desktop-system-clock{display:none!important}}
+@media(max-width:560px){.desktop-brand{min-width:0!important}.desktop-brand-mark{width:38px!important;height:38px!important}.app-title{font-size:12px!important}.app-title small{font-size:7px!important}.chat-panel{min-height:62vh!important;height:68vh!important}.chat-log{padding:16px 12px!important}.chat-bubble{max-width:94%!important;font-size:13px!important}.chat-input-row{margin:0 10px 12px!important;width:calc(100% - 20px)!important;padding:7px!important}.icon-button{width:42px!important;height:42px!important;min-height:42px!important}.sovereign-desktop-dock .q-btn{min-width:42px!important;padding:3px 5px!important;font-size:8px!important}.side-panel .avatar-stage{min-height:220px!important}}
+
 </style>
 
 <div id="toast-container" class="toast-container"></div>
@@ -1416,7 +1466,7 @@ def main_page():
 
     # ---- Body ------------------------------------------------------------
     with ui.row().classes("app-body w-full no-wrap"):
-        # LEFT: chat
+        # LEFT: primary intelligence surface
         with ui.column().classes("chat-panel glass-panel"):
             chat_log = ui.column().classes("chat-log w-full")
 
