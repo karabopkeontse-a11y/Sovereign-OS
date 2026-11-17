@@ -279,6 +279,7 @@ def create_app(db_path=None, router=None, token=None):
                 reply = response.content if hasattr(response, "content") else str(response)
                 results.append({"specialist": specialist["name"], "role": specialist["role"],
                                 "provider": info.provider, "model": info.model, "reply": reply})
+                base_messages.append(AIMessage(content="[" + specialist["name"] + "] " + str(reply)))
                 db = state.connection()
                 try:
                     db.execute("INSERT INTO api_messages VALUES (?, ?, ?, ?, ?, ?, ?)",
