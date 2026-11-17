@@ -2,7 +2,7 @@
 from __future__ import annotations
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-import os, secrets, sqlite3
+import os, secrets, sqlite3, shutil, subprocess, zipfile
 from pathlib import Path
 from uuid import uuid4
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
@@ -106,7 +106,7 @@ class SovereignAPI:
                                "ORDER BY created_at DESC LIMIT 12", (conversation_id,)).fetchall()
         finally:
             db.close()
-        memories = self.workspaces.search(workspace.id, payload.message, limit=5)
+        memories = self.workspaces.search(workspace.id, payload.message, limit=3 if payload.voice_mode else 5)
         memory_context = "\n".join("- " + item.content for item in memories)
         assistant_name = "Thothi, the customer-facing SmartFlow BW assistant powered by SovereignOS" if workspace.name == "SmartFlow BW" else "SovereignOS"
         system = ("You are " + assistant_name + " in the " + workspace.name + " workspace. Purpose: "
@@ -132,7 +132,7 @@ class SovereignAPI:
                 messages.append(HumanMessage(content=content))
             else:
                 messages.append(HumanMessage(content=payload.message))
-            response, info, used_index = (router.invoke(messages, max_tokens=320) if payload.voice_mode else router.invoke(messages))
+            response, info, used_index = (router.invoke(messages, max_tokens=192) if payload.voice_mode else router.invoke(messages))
             reply = response.content if hasattr(response, "content") else str(response)
             provider, model = info.provider, info.model
         except Exception as exc:
@@ -153,7 +153,59 @@ class SovereignAPI:
         return {"conversation_id": conversation_id, "workspace_id": workspace.id,
                 "reply": reply, "provider": provider, "model": model,
                 "fallback_used": used_index != getattr(router, "active_index", used_index),
-                "selected_model": selected}
+                "selected_model": selected, "runtime": info.runtime}
+
+
+def create_libreoffice_test_document(workspace_root: Path):
+    """Create one fixed, harmless ODT inside the dedicated agent workspace."""
+    target_dir = (Path(workspace_root).resolve() / "agent_workspace" / "libreoffice").resolve()
+    target_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    target = (target_dir / f"sovereignos-libreoffice-test-{stamp}.odt").resolve()
+    if target_dir not in target.parents:
+        raise RuntimeError("The test document path escaped the agent workspace.")
+    content = """<?xml version="1.0" encoding="UTF-8"?>
+<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" office:version="1.2">
+ <office:body><office:text>
+  <text:h text:outline-level="1">SovereignOS · LibreOffice integration test</text:h>
+  <text:p>This document was created locally by SovereignOS.</text:p>
+  <text:p>Purpose: verify that the desktop agent can create a document in its own workspace and open it in LibreOffice.</text:p>
+  <text:p>Safety boundary: this test did not read, edit, upload, or share any existing personal files.</text:p>
+  <text:p>Next step: approve a specific file or folder before granting any broader document access.</text:p>
+ </office:text></office:body>
+</office:document-content>"""
+    manifest = """<?xml version="1.0" encoding="UTF-8"?>
+<manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0" manifest:version="1.2">
+ <manifest:file-entry manifest:full-path="/" manifest:media-type="application/vnd.oasis.opendocument.text"/>
+ <manifest:file-entry manifest:full-path="content.xml" manifest:media-type="text/xml"/>
+</manifest:manifest>"""
+    with zipfile.ZipFile(target, "w") as archive:
+        archive.writestr("mimetype", "application/vnd.oasis.opendocument.text", compress_type=zipfile.ZIP_STORED)
+        archive.writestr("content.xml", content, compress_type=zipfile.ZIP_DEFLATED)
+        archive.writestr("META-INF/manifest.xml", manifest, compress_type=zipfile.ZIP_DEFLATED)
+
+    candidates = [shutil.which("soffice"), shutil.which("libreoffice")]
+    if os.name == "nt":
+        for variable in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"):
+            base = os.getenv(variable)
+            if base:
+                candidates.extend([
+                    str(Path(base) / "LibreOffice" / "program" / "soffice.exe"),
+                    str(Path(base) / "Programs" / "LibreOffice" / "program" / "soffice.exe"),
+                ])
+    executable = next((item for item in candidates if item and Path(item).is_file()), None)
+    if not executable:
+        raise FileNotFoundError(
+            "The test document was created in the SovereignOS agent workspace, "
+            "but LibreOffice was not found. Install LibreOffice or add soffice to PATH."
+        )
+    process = subprocess.Popen(
+        [executable, "--writer", "--norestore", "--nodefault", str(target)],
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        shell=False, close_fds=(os.name != "nt"),
+    )
+    return {"file_name": target.name, "opened": True, "process_id": process.pid,
+            "scope": "SovereignOS agent workspace only"}
 
 def create_app(db_path=None, router=None, token=None):
     state = SovereignAPI(db_path or os.getenv("SOVEREIGN_DB_PATH",
@@ -195,6 +247,16 @@ def create_app(db_path=None, router=None, token=None):
     @app.get("/api/v1/health")
     def health():
         return {"status": "ok", "service": "SovereignOS API", "version": "1.0.0"}
+    @app.post("/api/v1/desktop/libreoffice/test", dependencies=[Depends(authorize)])
+    def libreoffice_test():
+        try:
+            result = create_libreoffice_test_document(state.db_path.parent)
+            return {"status": "opened", **result}
+        except FileNotFoundError as exc:
+            raise HTTPException(503, str(exc))
+        except Exception as exc:
+            raise HTTPException(500, "LibreOffice test failed: " + type(exc).__name__ + ": " + str(exc))
+
     @app.get("/api/v1/workspaces", dependencies=[Depends(authorize)])
     def list_workspaces():
         return {"workspaces": [{"id": w.id, "name": w.name, "purpose": w.purpose}
