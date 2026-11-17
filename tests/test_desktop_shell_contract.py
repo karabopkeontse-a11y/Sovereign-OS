@@ -18,6 +18,12 @@ class DesktopShellContractTests(unittest.TestCase):
         self.assertIn("O visibly overlaps the S", mark)
         self.assertIn("O is deliberately rendered second", mark)
 
+    def test_web_and_installed_pwa_use_the_same_master_mark(self):
+        index = (ROOT / "clients" / "web" / "index.html").read_text(encoding="utf-8")
+        manifest = (ROOT / "clients" / "web" / "public" / "manifest.webmanifest").read_text(encoding="utf-8")
+        self.assertIn('rel="icon" href="./sovereign-os-mark.svg"', index)
+        self.assertIn('"src":"./sovereign-os-mark.svg"', manifest)
+
     def test_native_window_has_safe_browser_fallback(self):
         source = (ROOT / "sovereign_os_ultimate.py").read_text(encoding="utf-8")
         self.assertIn('os.getenv("SOVEREIGN_NATIVE_WINDOW", "auto")', source)
