@@ -407,3 +407,12 @@ body[data-core-state="speaking"] .orb-ring{border-color:#20cfff;filter:brightnes
 #view-chat .composer-row textarea#message{flex:1 1 0!important;width:100%!important;height:50px!important;min-height:50px!important;max-height:132px!important;padding:11px 12px!important;line-height:1.4!important;align-self:center!important}
 #view-chat .visual-privacy-note{max-width:100%;font-size:9px;line-height:1.35;margin:2px 2px 4px}
 #run-libreoffice-test{margin-top:10px}
+
+
+/* Final composer correction: the textarea must flex within the row, not claim the row's full width. */
+#view-chat .composer{width:calc(100% - 28px)!important;max-width:900px!important;min-width:0!important;flex:0 0 auto!important;}
+#view-chat .composer-row{display:flex!important;flex-direction:row!important;align-items:center!important;gap:9px!important;width:100%!important;min-width:0!important;}
+#view-chat .composer-row textarea#message{display:block!important;flex:1 1 0!important;flex-basis:0!important;width:0!important;min-width:0!important;height:50px!important;min-height:50px!important;max-height:132px!important;padding:11px 12px!important;resize:none!important;overflow-y:auto!important;line-height:1.4!important;align-self:stretch!important;}
+#view-chat .composer-row #attach-image{flex:0 0 42px!important;width:42px!important;min-width:42px!important;height:46px!important;}
+#view-chat .composer-row #send-button{flex:0 0 104px!important;width:104px!important;min-width:104px!important;height:46px!important;min-height:46px!important;}
+@media(max-width:520px){#view-chat .composer{width:calc(100% - 12px)!important;padding:9px!important;}#view-chat .composer-row{flex-direction:row!important;gap:6px!important;}#view-chat .composer-row textarea#message{width:0!important;flex:1 1 0!important;height:46px!important;min-height:46px!important;}#view-chat .composer-row #send-button{flex-basis:76px!important;width:76px!important;min-width:76px!important;padding:9px 6px!important;}}
