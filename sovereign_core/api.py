@@ -245,7 +245,7 @@ def create_app(db_path=None, router=None, token=None):
     origins = [x.strip() for x in os.getenv("SOVEREIGN_API_CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173,http://localhost:8080,http://127.0.0.1:8080").split(",") if x.strip()]
     if origins:
         app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=False,
-                           allow_methods=["GET", "POST"], allow_headers=["Authorization", "Content-Type"])
+                           allow_methods=["GET", "POST"], allow_headers=["Authorization", "Content-Type", "X-Sovereign-Language"])
     def authorize(authorization: str | None = Header(default=None)):
         if not expected_token:
             raise HTTPException(503, "API locked: configure SOVEREIGN_API_TOKEN")
@@ -404,12 +404,16 @@ def create_app(db_path=None, router=None, token=None):
         except Exception:
             raise HTTPException(422, "The converted audio could not be read.")
 
+        language = request.headers.get("x-sovereign-language", "en-GB").strip()
+        allowed_languages = {"en-GB", "en-US", "en-ZA", "tn-BW"}
+        if language not in allowed_languages:
+            raise HTTPException(400, "Unsupported voice recognition language.")
         try:
             transcript = await asyncio.wait_for(
                 asyncio.to_thread(
                     recognizer.recognize_google,
                     audio_data,
-                    language="en-GB",
+                    language=language,
                 ),
                 timeout=15,
             )
