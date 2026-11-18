@@ -871,6 +871,8 @@ def create_app(db_path=None, router=None, token=None):
         step = next((item for item in tasks.list_steps(problem.id) if item.id == step_id), None)
         if not step:
             raise HTTPException(404, "Plan step not found in this task")
+        if problem.status in {"blocked", "failed", "completed", "cancelled"}:
+            raise HTTPException(409, "This task is closed to further approval decisions.")
         if step.status != "awaiting_approval":
             raise HTTPException(409, "This step is no longer awaiting approval.")
         decision = "approved" if payload.approved else "rejected"
@@ -881,7 +883,11 @@ def create_app(db_path=None, router=None, token=None):
             remaining = [item for item in tasks.list_steps(problem.id)
                          if item.status == "awaiting_approval"]
             if not payload.approved:
-                if problem.status == "awaiting_approval":
+                # A rejected step closes the task and cancels its other pending requests.
+                for pending_step in remaining:
+                    tasks.update_step_status(pending_step.id, "cancelled")
+                current = tasks.get_problem(problem.id)
+                if current and current.status in {"planned", "awaiting_approval", "running"}:
                     tasks.set_problem_status(problem.id, "blocked")
             elif not remaining and problem.status == "awaiting_approval":
                 tasks.set_problem_status(problem.id, "planned")
