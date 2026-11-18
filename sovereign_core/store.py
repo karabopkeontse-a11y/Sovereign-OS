@@ -259,7 +259,7 @@ class TaskStore:
 
     def record_approval_event(self, workspace_id: str, problem_id: str,
                               step_id: str, decision: str, note: str = "") -> dict:
-        if decision not in {"approved", "rejected"}:
+        if decision not in {"approved", "rejected", "cancelled"}:
             raise ValueError("Approval decision must be approved or rejected")
         problem = self.get_problem(problem_id)
         if not problem or problem.workspace_id != workspace_id:
