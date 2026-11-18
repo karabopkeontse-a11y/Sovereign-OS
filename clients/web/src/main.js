@@ -182,11 +182,20 @@ async function approvals(){
   const scope=document.createElement("small");scope.textContent=a.workspace_name+" · Step "+a.step_number+" · "+a.permission_level.replaceAll("_"," ").toUpperCase();
   const action=document.createElement("p");action.textContent=a.action;
   const description=document.createElement("p");description.textContent=a.task_description;
+  const details=a.requested_details||{};
+  let preview=null;
+  if(a.tool_name==="workspace.create_note"){
+   preview=document.createElement("pre");preview.className="approval-tool-preview";
+   preview.textContent="New local file: "+(details.filename||"unnamed.md")+"\n\n"+(details.content||"");
+  }else if(a.tool_name==="workspace.read_file"){
+   preview=document.createElement("pre");preview.className="approval-tool-preview";
+   preview.textContent="Read-only file scope: "+(details.path||"unspecified");
+  }
   const actions=document.createElement("div");actions.className="approval-actions";
   const reject=document.createElement("button");reject.type="button";reject.className="danger";reject.textContent="Reject";
   const approve=document.createElement("button");approve.type="button";approve.className="primary";approve.textContent="Approve step";
   reject.onclick=()=>decideApproval(a,false,reject);approve.onclick=()=>decideApproval(a,true,approve);
-  actions.append(reject,approve);card.append(heading,scope,action,description,actions);list.append(card);
+  actions.append(reject,approve);card.append(heading,scope,action,description);if(preview)card.append(preview);card.append(actions);list.append(card);
  });
 }
 async function decideApproval(item,approved,button){
