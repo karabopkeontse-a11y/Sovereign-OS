@@ -456,7 +456,7 @@ async function transcribeVoiceBlob(blob,session){
   if(session!==callSession||error.name==="AbortError")return;
   voiceBusy=false;
   appendTranscript("SYSTEM","Voice input issue: "+(error.message||"transcription failed"));
-  const permanent=/FFmpeg|audio conversion engine is unavailable|SpeechRecognition package|Speech recognition service is unavailable|timed out|could not be decoded|Unsupported audio format|exceeds the 8 MB/i.test(error.message||"");
+  const permanent=/FFmpeg|audio conversion engine is unavailable|SpeechRecognition package|Speech recognition service is unavailable|timed out|timeout|could not be decoded|Unsupported audio format|exceeds the 8 MB/i.test(error.message||"");
   if(permanent){
    callActive=false;
    stopMicrophone(true);
