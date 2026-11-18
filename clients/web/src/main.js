@@ -712,7 +712,7 @@ async function startBatchRecognition(session){
   setCallState("error",denied?"MICROPHONE BLOCKED":"MICROPHONE ISSUE","I couldn't open your microphone.",denied?"Allow microphone access for localhost in Edge site permissions, then start again.":(error.message||"Check your microphone and try again."));
   el("call-interrupt").disabled=true;
   el("call-end").disabled=true;
-  el("call-start").disabled=!(apiConnected&&!!active&&!!routerData?.providers?.length&&voiceCapabilities?.available);
+  el("call-start").disabled=!(apiConnected&&!!active&&!!routerData?.providers?.length&&voiceCapabilities?.available&&(window.speechSynthesis||voiceCapabilities?.speech_output_available));
   notice("Could not open microphone: "+(error.message||error.name),"error");
  }
 }
@@ -798,7 +798,7 @@ function endCall(){
  voiceBusy=false;
  stopMicrophone(true);
  stopVoicePlayback();
- el("call-start").disabled=!(apiConnected&&!!active&&!!routerData?.providers?.length&&voiceCapabilities?.available);
+ el("call-start").disabled=!(apiConnected&&!!active&&!!routerData?.providers?.length&&voiceCapabilities?.available&&(window.speechSynthesis||voiceCapabilities?.speech_output_available));
  el("call-interrupt").disabled=true;
  el("call-end").disabled=true;
  setCallState("idle","STANDING BY","Your AI is ready when you are.","Call ended. Your transcript remains visible until you leave this page.");
