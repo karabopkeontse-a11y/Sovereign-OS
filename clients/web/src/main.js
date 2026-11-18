@@ -27,7 +27,7 @@ if([0.96,1.08].includes(Number(prefs.voiceRate)))prefs.voiceRate=1.14;
 function savePrefs(){localStorage.setItem("sovereign-ui-preferences",JSON.stringify(prefs));}
 let audioContext=null;
 
-let activeAudio=null,activeAudioUrl=null,voiceRequestController=null;
+let activeAudio=null,activeAudioUrl=null,voiceRequestController=null,activeUtterance=null;
 
 let liveRecognition=null,liveInterimText="",liveFinalizing=false;
 
@@ -48,6 +48,14 @@ function stopVoicePlayback(){
     const controller=voiceRequestController;
     voiceRequestController=null;
     if(controller)controller.abort();
+
+    if(activeUtterance){
+        activeUtterance.onstart=null;
+        activeUtterance.onend=null;
+        activeUtterance.onerror=null;
+        activeUtterance=null;
+    }
+    if(window.speechSynthesis)window.speechSynthesis.cancel();
 
     if(activeAudio){
         const audio=activeAudio;
@@ -314,16 +322,50 @@ function updateCallSupport(){
 }function appendTranscript(who,text){const empty=el("call-transcript").querySelector(".transcript-empty");if(empty)empty.remove();const item=document.createElement("div");item.className="transcript-line";const label=document.createElement("b");label.textContent=who;const body=document.createElement("p");body.textContent=text;item.append(label,body);el("call-transcript").append(item);el("call-transcript").scrollTop=el("call-transcript").scrollHeight;}
 function setCallState(state,label,title,description){el("call-shell").dataset.state=state;el("call-status").textContent=label;el("call-status").className="status-tag "+(["listening","thinking","speaking"].includes(state)?"status-live":state==="error"?"status-warn":"status-idle");el("voice-orb").classList.toggle("voice-active",["listening","thinking","speaking"].includes(state));const visual=el("voice-state-indicator");if(visual){visual.dataset.state=state;el("voice-state-label").textContent=label;el("voice-state-detail").textContent=description;}setCoreState(state);el("call-title").textContent=title;el("call-description").textContent=description;}
 function clearListenTimer(){if(listenTimer!==null){window.clearTimeout(listenTimer);listenTimer=null;}}
-async function speak(text,session=callSession){
+async function speak(text,session=callSession,preferLocal=true){
     stopMicrophone(true);
     stopVoicePlayback();
     voiceBusy=true;
-    setCallState("preparing","PREPARING AUDIO","Your response is ready.","Generating private voice audio.");
+    setCallState("preparing","PREPARING AUDIO","Your response is ready.","Preparing speech output.");
 
     const spoken=speechText(text);
     if(!spoken){
         voiceBusy=false;
         if(callActive)listenAgain(250);
+        return;
+    }
+
+    if(preferLocal&&window.speechSynthesis&&typeof SpeechSynthesisUtterance!=="undefined"){
+        const voices=window.speechSynthesis.getVoices();
+        const selected=voices.find(item=>item.name===prefs.voiceName)||
+            voices.find(item=>item.lang===prefs.voiceLanguage)||
+            voices.find(item=>item.lang?.startsWith((prefs.voiceLanguage||"en-GB").split("-")[0]));
+        const utterance=new SpeechSynthesisUtterance(spoken);
+        utterance.voice=selected||null;
+        utterance.lang=prefs.voiceLanguage||"en-GB";
+        utterance.rate=Math.min(1.2,Math.max(.75,Number(prefs.voiceRate)||1.14));
+        activeUtterance=utterance;
+        utterance.onstart=()=>{
+            if(session===callSession&&activeUtterance===utterance)
+                setCallState("speaking","SPEAKING","Your answer is here.","Sovereign is speaking using your browser voice.");
+        };
+        utterance.onend=()=>{
+            if(session!==callSession||activeUtterance!==utterance)return;
+            activeUtterance=null;voiceBusy=false;
+            if(callActive)listenAgain(160);else setCoreState("idle");
+        };
+        utterance.onerror=()=>{
+            if(session!==callSession||activeUtterance!==utterance)return;
+            activeUtterance=null;voiceBusy=false;
+            if(voiceCapabilities?.speech_output_available){
+                appendTranscript("SYSTEM","Browser speech output failed. Switching to SovereignOS Edge TTS.");
+                speak(text,session,false);
+            }else{
+                appendTranscript("SYSTEM","Browser speech output failed. The response remains available as text.");
+                if(callActive)listenAgain(500);else setCoreState("error");
+            }
+        };
+        window.speechSynthesis.speak(utterance);
         return;
     }
 
