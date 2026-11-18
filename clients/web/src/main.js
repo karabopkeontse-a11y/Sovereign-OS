@@ -298,7 +298,7 @@ async function speak(text,session=callSession){
                     text:spoken,
                     rate:Math.min(1.2,Math.max(.75,Number(prefs.voiceRate)||1.14))
                 }),
-                signal:controller.signal
+                signal:AbortSignal.any([controller.signal,AbortSignal.timeout(30000)])
             }
         );
 
@@ -650,6 +650,10 @@ function listenAgain(delay=350){
 }
 
 function startCall(){
+ if(!voiceCapabilities?.available){
+  notice(voiceCapabilities?.reason||"Voice services are still being checked. Reconnect the local API and try again.","warning");
+  return;
+ }
  if(!routerData?.providers?.length){
   notice("No AI model is configured. Check your configured model providers before starting a call.","warning");
   return;
