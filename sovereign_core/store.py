@@ -66,6 +66,17 @@ class TaskStore:
                     evidence_reference TEXT NOT NULL, created_at TEXT NOT NULL,
                     FOREIGN KEY(step_id) REFERENCES plan_steps(id)
                 );
+                CREATE TABLE IF NOT EXISTS approval_events (
+                    id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL,
+                    problem_id TEXT NOT NULL, step_id TEXT NOT NULL,
+                    decision TEXT NOT NULL, note TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+                    FOREIGN KEY(problem_id) REFERENCES problems(id),
+                    FOREIGN KEY(step_id) REFERENCES plan_steps(id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_approval_events_workspace
+                    ON approval_events(workspace_id, created_at);
                 CREATE TABLE IF NOT EXISTS memory_records (
                     id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, kind TEXT NOT NULL,
                     content TEXT NOT NULL, source TEXT NOT NULL, confidence REAL NOT NULL,
@@ -197,6 +208,38 @@ class TaskStore:
             db.execute("INSERT INTO tool_runs VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                        (str(uuid4()), step_id, tool_name, input_summary, output_summary,
                         outcome, started_at, ended_at))
+
+
+    def record_approval_event(self, workspace_id: str, problem_id: str,
+                              step_id: str, decision: str, note: str = "") -> dict:
+        if decision not in {"approved", "rejected"}:
+            raise ValueError("Approval decision must be approved or rejected")
+        problem = self.get_problem(problem_id)
+        if not problem or problem.workspace_id != workspace_id:
+            raise ValueError("Problem does not belong to this workspace")
+        if not any(step.id == step_id for step in self.list_steps(problem_id)):
+            raise ValueError("Step does not belong to this task")
+        event = {
+            "id": str(uuid4()), "workspace_id": workspace_id,
+            "problem_id": problem_id, "step_id": step_id,
+            "decision": decision, "note": (note or "").strip()[:1000],
+            "created_at": _now(),
+        }
+        with self._connection() as db:
+            db.execute("INSERT INTO approval_events VALUES (?, ?, ?, ?, ?, ?, ?)",
+                       tuple(event.values()))
+        return event
+
+    def list_approval_events(self, workspace_id: str, problem_id: str | None = None) -> list[dict]:
+        sql = "SELECT * FROM approval_events WHERE workspace_id=?"
+        params = [workspace_id]
+        if problem_id:
+            sql += " AND problem_id=?"
+            params.append(problem_id)
+        sql += " ORDER BY created_at, id"
+        with self._connection() as db:
+            rows = db.execute(sql, params).fetchall()
+        return [dict(row) for row in rows]
 
     def complete_problem(self, problem_id: str) -> Problem:
         steps = self.list_steps(problem_id)
