@@ -207,11 +207,47 @@ async function loadAgentTasks(){
    const heading=document.createElement("h3");heading.textContent=entry.task.title;
    const status=document.createElement("span");status.className="status-tag "+(entry.task.status==="completed"?"status-safe":entry.task.status==="awaiting_approval"?"status-warn":"status-idle");status.textContent=entry.task.status.replaceAll("_"," ").toUpperCase();
    const description=document.createElement("p");description.textContent=entry.task.description;
+   const specs=entry.tool_specs||[];
    const steps=document.createElement("ol");steps.className="agent-step-list";
-   entry.steps.forEach(step=>{const item=document.createElement("li");const action=document.createElement("span");action.textContent=step.action;const meta=document.createElement("small");meta.textContent=step.permission_level.replaceAll("_"," ")+" · "+step.status.replaceAll("_"," ");item.append(action,meta);steps.append(item);});
-   card.append(heading,status,description,steps);list.append(card);
+   entry.steps.forEach(step=>{
+    const item=document.createElement("li");const action=document.createElement("span");action.textContent=step.action;
+    const spec=specs.find(value=>value.step_id===step.id);
+    const meta=document.createElement("small");meta.textContent=step.permission_level.replaceAll("_"," ")+" · "+step.status.replaceAll("_"," ")+(spec?" · "+spec.tool_name:"");
+    item.append(action,meta);steps.append(item);
+   });
+   card.append(heading,status,description,steps);
+   const runnable=specs.some(spec=>{
+    const step=entry.steps.find(value=>value.id===spec.step_id);
+    return step&&(step.status==="approved"||(step.status==="planned"&&step.permission_level==="read_only"));
+   });
+   if(runnable&&!["blocked","failed","completed","cancelled"].includes(entry.task.status)){
+    const run=document.createElement("button");run.type="button";run.className="primary";run.textContent="Run next eligible tool step ↗";
+    run.onclick=()=>runAgentStep(entry.task.id,run);card.append(run);
+   }
+   list.append(card);
   });
  }catch(error){list.textContent="Agent task list unavailable: "+error.message;}
+}
+async function runAgentStep(taskId,button){
+ const feedback=el("agent-plan-feedback"),output=el("agent-tool-result");
+ setBusy(button,true,"Executing safely…");
+ try{
+  const result=await api("/api/v1/workspaces/"+encodeURIComponent(active)+"/agent/tasks/"+encodeURIComponent(taskId)+"/execute-next",{method:"POST",body:JSON.stringify({}),timeoutMs:30000});
+  const tool=result.tool_result||{};
+  let summary="Tool step verified.";
+  if(tool.tool==="workspace.list_files")summary="Listed "+tool.count+" files in this workspace agent folder.";
+  else if(tool.tool==="workspace.read_file")summary="Read "+tool.path+" ("+tool.bytes+" bytes).";
+  else if(tool.tool==="workspace.create_note")summary="Created "+tool.path+" ("+tool.bytes+" bytes).";
+  feedback.textContent=summary+" Duration: "+result.duration_ms+" ms. Task status: "+result.task_status.replaceAll("_"," ")+".";
+  output.textContent=typeof tool.content==="string"?tool.content:JSON.stringify(tool,null,2);
+  output.classList.remove("hidden");
+  await loadAgentTasks();await approvals();
+  notice("Agent tool completed and passed its verification check.");
+ }catch(error){
+  feedback.textContent="Agent execution stopped: "+error.message;
+  notice("Agent tool could not complete: "+error.message,"error");
+  setBusy(button,false);
+ }
 }
 async function createAgentPlan(){
  const field=el("agent-goal"),button=el("agent-plan-button"),feedback=el("agent-plan-feedback"),goal=field.value.trim();
