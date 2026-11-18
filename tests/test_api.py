@@ -28,6 +28,17 @@ class FakeRouter:
             runtime = "cloud"
         return Reply(), Info(), 0
 
+class FakeQwenOnlyRouter(FakeRouter):
+    class CandidateInfo:
+        provider = "Groq"
+        model = "qwen/qwen3.8-27b"
+    class Candidate:
+        info = CandidateInfo()
+    candidates = [Candidate()]
+    def invoke(self, messages, **kwargs):
+        raise AssertionError("Qwen must not be invoked by the agent planner")
+
+
 class FakePlanningRouter(FakeRouter):
     def invoke(self, messages, **kwargs):
         class Reply:
@@ -200,6 +211,26 @@ class SovereignAPITests(unittest.TestCase):
         other = client.get("/api/v1/workspaces/"+b["id"]+"/agent/tasks/"+problem_id,
                            headers=self.headers)
         self.assertEqual(other.status_code, 404)
+
+
+    def test_agent_planner_fails_closed_when_only_qwen_is_configured(self):
+        client = TestClient(create_app(Path(self.temp.name)/"qwen.sqlite3",
+                                       router=FakeQwenOnlyRouter(), token="test-secret"))
+        workspaces = client.get("/api/v1/workspaces", headers=self.headers).json()["workspaces"]
+        workspace = next(w for w in workspaces if w["name"] == "SovereignOS")
+        result = client.post("/api/v1/workspaces/"+workspace["id"]+"/agent/plan",
+                             headers=self.headers,
+                             json={"goal":"Prepare a safe plan for a project milestone."})
+        self.assertEqual(result.status_code, 409)
+        self.assertIn("Qwen remains offline", result.json()["detail"])
+
+    def test_voice_status_is_authenticated_and_reports_dependencies(self):
+        denied = self.client.get("/api/v1/voice/status")
+        self.assertEqual(denied.status_code, 401)
+        allowed = self.client.get("/api/v1/voice/status", headers=self.headers)
+        self.assertEqual(allowed.status_code, 200)
+        self.assertIn("available", allowed.json())
+        self.assertIn("ffmpeg_available", allowed.json())
 
 if __name__ == "__main__":
     unittest.main()
