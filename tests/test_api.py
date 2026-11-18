@@ -1,4 +1,4 @@
-"""REST API authentication, workspace isolation and IoT safety tests."""
+﻿"""REST API authentication, workspace isolation and IoT safety tests."""
 import tempfile
 import unittest
 from pathlib import Path
@@ -19,12 +19,13 @@ class FakeRouter:
         if provider != "Test" or model != "fake":
             raise ValueError("That model is not configured")
         return {"provider": provider, "model": model, "runtime": "cloud", "active": True}
-    def invoke(self, messages):
+    def invoke(self, messages, **kwargs):
         class Reply:
             content = "Test response"
         class Info:
             provider = "Test"
             model = "fake"
+            runtime = "cloud"
         return Reply(), Info(), 0
 
 @unittest.skipIf(TestClient is None, "Install requirements-api.txt to run REST API tests")
@@ -36,6 +37,30 @@ class SovereignAPITests(unittest.TestCase):
         self.headers = {"Authorization":"Bearer test-secret"}
     def tearDown(self):
         self.temp.cleanup()
+    def test_voice_transcription_requires_auth(self):
+        result = self.client.post(
+            "/api/v1/voice/transcribe",
+            content=b"audio",
+            headers={"Content-Type": "audio/webm"},
+        )
+        self.assertEqual(result.status_code, 401)
+
+    def test_voice_transcription_rejects_unsupported_media_type(self):
+        result = self.client.post(
+            "/api/v1/voice/transcribe",
+            content=b"audio",
+            headers={**self.headers, "Content-Type": "text/plain"},
+        )
+        self.assertEqual(result.status_code, 415)
+
+    def test_voice_transcription_rejects_empty_audio(self):
+        result = self.client.post(
+            "/api/v1/voice/transcribe",
+            content=b"",
+            headers={**self.headers, "Content-Type": "audio/webm"},
+        )
+        self.assertEqual(result.status_code, 422)
+
     def test_health_public_workspace_api_protected(self):
         self.assertEqual(self.client.get("/api/v1/health").status_code,200)
         self.assertEqual(self.client.get("/api/v1/workspaces").status_code,401)
@@ -103,3 +128,5 @@ class SovereignAPITests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+

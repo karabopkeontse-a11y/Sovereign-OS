@@ -96,6 +96,18 @@ def _retry_after_seconds(exc: Exception) -> float | None:
             return None
 
 
+def _supports_vision(candidate: ModelCandidate) -> bool:
+    """Conservative model-ID capability check for image-input routing."""
+    model = candidate.info.model.casefold()
+    markers = (
+        "vision", "-vl", ":vl", "gpt-4o", "gpt-4.1", "gpt-4.5",
+        "gemini", "claude-3", "claude-sonnet-4", "pixtral", "llava",
+        "internvl", "qwen2-vl", "qwen2.5-vl", "qwen-vl", "minicpm-v",
+        "molmo", "idefics", "phi-3.5-vision", "phi-4-multimodal",
+    )
+    return any(marker in model for marker in markers)
+
+
 class ModelRouter:
     """Ordered model candidates with provider-level circuit breakers."""
 
@@ -349,8 +361,13 @@ class ModelRouter:
             })
         return rows
 
-    def invoke(self, messages, tools=None, start_index: int | None = None, max_tokens: int | None = None):
-        """Invoke from the manually selected model, then use configured fallbacks."""
+    def invoke(self, messages, tools=None, start_index: int | None = None,
+               max_tokens: int | None = None, require_vision: bool = False):
+        """Invoke an eligible model, preferring the manually selected model.
+
+        Image requests are restricted to model IDs known to accept visual input;
+        they never fall through to a text-only model.
+        """
         if start_index is None:
             start_index = self.active_index
         failures: list[str] = []
@@ -364,6 +381,14 @@ class ModelRouter:
             )
         start_index = max(0, min(int(start_index), len(self.candidates) - 1))
         order = list(range(start_index, len(self.candidates))) + list(range(0, start_index))
+        if require_vision:
+            order = [index for index in order if _supports_vision(self.candidates[index])]
+            if not order:
+                raise ModelRoutingError(
+                    "No configured model is identified as vision-capable. "
+                    "Configure an enabled vision model in your local provider settings; "
+                    "text-only models will not receive image data."
+                )
         for index in order:
             candidate = self.candidates[index]
             eligible, reason = self._eligible(candidate)
@@ -384,7 +409,17 @@ class ModelRouter:
                 failures.append(f"{candidate.info.label}: {type(exc).__name__}: {exc}")
                 if not is_capacity_error(exc):
                     raise
-                self._record_failure(candidate, exc)
+                message = str(exc).casefold()
+                status = _status_code(exc)
+                capability_rejection = status in {400, 409, 422} and any(
+                    marker in message for marker in ("image", "vision", "multimodal", "content type")
+                )
+                if capability_rejection:
+                    self._candidate_cooldowns[self._cooldown_key(candidate)] = (
+                        self._clock() + 300.0, str(exc)[:240]
+                    )
+                else:
+                    self._record_failure(candidate, exc)
         detail = "\n".join(failures[-10:])
         raise ModelRoutingError(
             "All configured model options are currently unavailable, cooling down, "

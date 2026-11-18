@@ -1972,19 +1972,18 @@ def start_web_client():
         raise RuntimeError("Port 5173 is occupied by a service that is not the SovereignOS web client.") from exc
     finally:
         probe.close()
-    npm = shutil.which("npm.cmd") or shutil.which("npm")
-    if not npm:
-        raise RuntimeError("Node.js/npm is required to launch SovereignOS. Install Node.js once, then relaunch.")
-    vite_args = "run dev -- --host 127.0.0.1 --port 5173 --strictPort"
-    if os.name == "nt" and npm.casefold().endswith((".cmd", ".bat")):
-        # Batch files must be invoked through CALL from cmd.exe, including paths with spaces.
-        command = [
-            os.environ.get("COMSPEC", "cmd.exe"),
-            "/d", "/c",
-            'call "' + npm + '" ' + vite_args,
-        ]
-    else:
-        command = [npm, *vite_args.split()]
+    node = shutil.which("node.exe") or shutil.which("node")
+    if not node:
+        raise RuntimeError("Node.js is required to launch SovereignOS.")
+
+    npm_cli = Path(node).resolve().parent / "node_modules" / "npm" / "bin" / "npm-cli.js"
+    if not npm_cli.is_file():
+        raise RuntimeError("npm's JavaScript CLI was not found at " + str(npm_cli))
+
+    command = [
+        node, str(npm_cli), "run", "dev", "--",
+        "--host", "127.0.0.1", "--port", "5173", "--strictPort",
+    ]
 
     # Preserve startup diagnostics instead of discarding npm/Vite's error output.
     vite_log_dir = BASE_DIR / "sovereign_workspace" / "logs"
@@ -1998,7 +1997,7 @@ def start_web_client():
         )
     finally:
         vite_log.close()
-    deadline = time.monotonic() + 20
+    deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
         if ready():
             print("SovereignOS unified interface ready at http://127.0.0.1:5173/.")
@@ -2057,7 +2056,7 @@ def start_embedded_api():
     raise RuntimeError(f"SovereignOS API startup timed out on {host}:{port}.")
 
 
-if __name__ in {"__main__", "__mp_main__"}:
+if __name__ == "__main__":
     web_client_process = start_web_client()
     embedded_api = start_embedded_api()
     if not MODEL_ROUTER.candidates:
@@ -2074,6 +2073,9 @@ if __name__ in {"__main__", "__mp_main__"}:
     if native_mode and not webview_available:
         print("Native window requested but PyWebView is missing. Install requirements-desktop-native.txt; opening browser mode instead.")
         native_mode = False
+
+    if native_mode:
+        app.native.start_args["gui"] = "edgechromium"
 
     print("Launching SovereignOS native desktop shell." if native_mode
           else "Launching SovereignOS in local browser mode.")

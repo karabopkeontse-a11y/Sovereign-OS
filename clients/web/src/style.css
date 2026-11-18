@@ -416,3 +416,452 @@ body[data-core-state="speaking"] .orb-ring{border-color:#20cfff;filter:brightnes
 #view-chat .composer-row #attach-image{flex:0 0 42px!important;width:42px!important;min-width:42px!important;height:46px!important;}
 #view-chat .composer-row #send-button{flex:0 0 104px!important;width:104px!important;min-width:104px!important;height:46px!important;min-height:46px!important;}
 @media(max-width:520px){#view-chat .composer{width:calc(100% - 12px)!important;padding:9px!important;}#view-chat .composer-row{flex-direction:row!important;gap:6px!important;}#view-chat .composer-row textarea#message{width:0!important;flex:1 1 0!important;height:46px!important;min-height:46px!important;}#view-chat .composer-row #send-button{flex-basis:76px!important;width:76px!important;min-width:76px!important;padding:9px 6px!important;}}
+
+
+/* =========================================================
+   SOVEREIGNOS WORKSPACE EXPANSION 2030
+   Preserve the official SO mark and existing visual identity.
+   ========================================================= */
+
+#view-chat {
+    width: 100%;
+    min-width: 0;
+}
+
+#view-chat .intelligence-workspace {
+    width: 100%;
+    max-width: none;
+    height: calc(100dvh - 160px);
+    min-height: 520px;
+    display: flex;
+    flex-direction: column;
+}
+
+#view-chat .intel-topline {
+    flex: 0 0 auto;
+    margin-bottom: 12px;
+}
+
+#view-chat .intel-context {
+    flex: 0 0 auto;
+    margin-bottom: 12px;
+}
+
+#view-chat .chatpanel {
+    width: 100%;
+    flex: 1 1 auto;
+    min-height: 0 !important;
+    height: auto !important;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+#view-chat .messages {
+    flex: 1 1 0;
+    min-height: 0 !important;
+    max-height: none !important;
+    width: 100%;
+    padding: clamp(20px, 3vw, 48px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+
+#view-chat .chat-welcome {
+    position: relative;
+    isolation: isolate;
+    width: min(900px, 100%);
+    min-height: 100%;
+    margin: auto;
+    padding: clamp(28px, 4vh, 48px) 16px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+}
+
+#view-chat .chat-welcome::before {
+    content: "";
+    position: absolute;
+    z-index: -1;
+    top: 50%;
+    left: 50%;
+    width: 205px;
+    height: 205px;
+    margin-top: -165px;
+    border: 1px solid #277da1;
+    border-top: 2px solid #f1bd68;
+    border-right: 2px solid #28cbe9;
+    border-radius: 50%;
+    box-shadow: 0 0 22px #20cfff24;
+    transform: translateX(-50%);
+    animation: sovereignWelcomeOrbit 13s linear infinite;
+    pointer-events: none;
+}
+
+#view-chat .chat-welcome::after {
+    content: "";
+    position: absolute;
+    z-index: -2;
+    top: 50%;
+    left: 50%;
+    width: 250px;
+    height: 250px;
+    margin-top: -188px;
+    border-radius: 50%;
+    background: radial-gradient(circle, #087bff24, #20cfff0b 48%, transparent 72%);
+    transform: translateX(-50%);
+    pointer-events: none;
+}
+
+#view-chat .welcome-mark {
+    position: relative;
+    z-index: 1;
+    display: block;
+    width: 150px;
+    height: 150px;
+    object-fit: contain;
+    margin: 0 auto 24px;
+    animation: soCoreFloat 5.2s ease-in-out infinite;
+    filter:
+        drop-shadow(0 0 18px #168dff99)
+        drop-shadow(0 0 42px #20cfff55);
+}
+
+#view-chat .chat-welcome > .eyebrow,
+#view-chat .chat-welcome h3,
+#view-chat .chat-welcome p,
+#view-chat .chat-welcome .prompt-suggestions {
+    position: relative;
+    z-index: 1;
+}
+
+#view-chat .chat-welcome h3 {
+    max-width: 850px;
+    font-size: clamp(34px, 4.5vw, 54px);
+    line-height: 1.12;
+    margin: 14px 0;
+}
+
+#view-chat .chat-welcome p {
+    max-width: 650px;
+    font-size: 14px;
+    line-height: 1.85;
+}
+
+#view-chat .prompt-suggestions {
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 11px;
+    margin-top: 28px;
+}
+
+#view-chat .composer {
+    flex: 0 0 auto;
+    width: calc(100% - 24px);
+    max-width: 1050px;
+    margin: 0 auto 14px;
+}
+
+@keyframes sovereignWelcomeOrbit {
+    from {
+        transform: translateX(-50%) rotate(0deg);
+    }
+    to {
+        transform: translateX(-50%) rotate(360deg);
+    }
+}
+
+@media(max-width:850px) {
+    #view-chat .intelligence-workspace {
+        height: calc(100dvh - 165px);
+        min-height: 480px;
+    }
+
+    #view-chat .messages {
+        padding: 22px 16px;
+    }
+}
+
+@media(max-width:520px) {
+    #view-chat .intelligence-workspace {
+        height: calc(100dvh - 160px);
+        min-height: 460px;
+    }
+
+    #view-chat .welcome-mark {
+        width: 112px;
+        height: 112px;
+    }
+
+    #view-chat .chat-welcome::before {
+        width: 155px;
+        height: 155px;
+        margin-top: -130px;
+    }
+
+    #view-chat .chat-welcome::after {
+        width: 190px;
+        height: 190px;
+        margin-top: -148px;
+    }
+
+    #view-chat .chat-welcome h3 {
+        font-size: 32px;
+    }
+
+    #view-chat .chat-welcome p {
+        font-size: 12px;
+    }
+
+    #view-chat .prompt-suggestions {
+        flex-direction: column;
+        width: 100%;
+    }
+
+    #view-chat .prompt-suggestions button {
+        width: 100%;
+    }
+}
+
+@media(prefers-reduced-motion:reduce) {
+    #view-chat .welcome-mark,
+    #view-chat .chat-welcome::before {
+        animation: none !important;
+    }
+}
+
+/* END SOVEREIGNOS WORKSPACE EXPANSION 2030 */
+
+/* SOVEREIGNOS UNIFIED INTELLIGENCE CANVAS */
+
+/* Reclaim the entire content column when Intelligence is open. */
+body:has(#view-chat:not(.hidden)) main {
+    width: 100% !important;
+    max-width: none !important;
+    min-width: 0 !important;
+    margin: 0 !important;
+    padding: 12px clamp(10px, 1.5vw, 24px) !important;
+}
+
+body:has(#view-chat:not(.hidden)) header {
+    margin-bottom: 10px !important;
+    padding-bottom: 10px !important;
+}
+
+#view-chat,
+#view-chat .intelligence-workspace {
+    width: 100% !important;
+    max-width: none !important;
+    min-width: 0 !important;
+}
+
+#view-chat .intelligence-workspace {
+    height: calc(100dvh - 155px) !important;
+    min-height: 0 !important;
+    display: flex !important;
+    flex-direction: column !important;
+}
+
+#view-chat .intel-topline {
+    margin: 2px 0 8px !important;
+}
+
+#view-chat .intel-context {
+    margin-bottom: 8px !important;
+}
+
+#view-chat .chatpanel {
+    flex: 1 1 0 !important;
+    width: 100% !important;
+    min-width: 0 !important;
+    min-height: 0 !important;
+    height: auto !important;
+    padding: 6px !important;
+    overflow: hidden !important;
+}
+
+#view-chat .messages {
+    flex: 1 1 0 !important;
+    width: 100% !important;
+    min-width: 0 !important;
+    min-height: 0 !important;
+    max-height: none !important;
+    padding: clamp(12px, 2vw, 30px) !important;
+    gap: 14px !important;
+    overflow-y: auto !important;
+}
+
+/* Make assistant text and media use the available output canvas. */
+#view-chat .bubble.assistant {
+    max-width: 98% !important;
+    overflow-wrap: anywhere;
+    font-size: 14px;
+    line-height: 1.75;
+}
+
+#view-chat .assistant-image,
+#view-chat .bubble video {
+    display: block;
+    width: auto;
+    max-width: 100%;
+    max-height: min(70dvh, 760px);
+    object-fit: contain;
+    margin: 12px auto;
+    border-radius: 15px;
+}
+
+/* Compact one-line composer. Keep attachment and privacy controls. */
+#view-chat .composer {
+    flex: 0 0 auto !important;
+    width: calc(100% - 8px) !important;
+    max-width: none !important;
+    margin: 5px auto 7px !important;
+    padding: 6px 9px !important;
+    gap: 3px !important;
+    border-radius: 15px !important;
+}
+
+#view-chat .composer-top,
+#view-chat .composer-foot {
+    display: none !important;
+}
+
+#view-chat .visual-privacy-note {
+    display: block !important;
+    max-height: 13px;
+    margin: 1px 3px 3px !important;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    font-size: 8px !important;
+    line-height: 1.2 !important;
+}
+
+#view-chat .composer-row {
+    min-height: 40px !important;
+    margin: 0 !important;
+    align-items: center !important;
+    gap: 8px !important;
+}
+
+#view-chat .composer-row textarea#message {
+    height: 38px !important;
+    min-height: 38px !important;
+    max-height: 90px !important;
+    padding: 8px 11px !important;
+    line-height: 1.35 !important;
+}
+
+#view-chat .composer-row #attach-image,
+#view-chat .composer-row #send-button {
+    height: 38px !important;
+    min-height: 38px !important;
+}
+
+@media(max-width:850px) {
+    body:has(#view-chat:not(.hidden)) main {
+        padding: 10px !important;
+    }
+
+    #view-chat .intelligence-workspace {
+        height: calc(100dvh - 145px) !important;
+    }
+}
+
+@media(max-width:520px) {
+    #view-chat .intelligence-workspace {
+        height: calc(100dvh - 135px) !important;
+    }
+
+    #view-chat .messages {
+        padding: 10px 7px !important;
+    }
+
+    #view-chat .composer {
+        width: 100% !important;
+        padding: 5px !important;
+    }
+
+    #view-chat .composer-row {
+        gap: 5px !important;
+    }
+}
+
+/* END SOVEREIGNOS UNIFIED INTELLIGENCE CANVAS */
+
+
+/* SovereignOS refinement: adaptive one-line composer and in-app approvals. */
+#view-chat .composer {
+    padding: 5px 8px !important;
+    margin: 4px auto 6px !important;
+    gap: 2px !important;
+}
+#view-chat .composer-row {
+    min-height: 40px !important;
+    align-items: center !important;
+}
+#view-chat .composer-row textarea#message {
+    height: 40px !important;
+    min-height: 40px !important;
+    max-height: 120px !important;
+    padding: 8px 11px !important;
+    line-height: 1.4 !important;
+}
+#view-chat .composer-row #attach-image,
+#view-chat .composer-row #send-button {
+    height: 40px !important;
+    min-height: 40px !important;
+}
+#view-chat .visual-privacy-note {
+    max-height: 12px !important;
+    margin: 1px 3px 2px !important;
+    font-size: 7.5px !important;
+}
+.so-approval-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 10000;
+    display: grid;
+    place-items: center;
+    padding: 20px;
+    background: #020817d9;
+    backdrop-filter: blur(12px);
+}
+.so-approval-dialog {
+    width: min(520px, 100%);
+    padding: 24px;
+    border: 1px solid #247eae;
+    border-radius: 20px;
+    color: #edf7ff;
+    background: linear-gradient(145deg, #10243b, #071326);
+    box-shadow: 0 28px 90px #000b, 0 0 36px #087bff20;
+}
+.so-approval-dialog h3 {
+    margin: 0 0 10px;
+    font-size: 19px;
+    letter-spacing: -.02em;
+}
+.so-approval-dialog p {
+    margin: 0;
+    color: #b8cce0;
+    font-size: 13px;
+    line-height: 1.7;
+}
+.so-approval-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    margin-top: 22px;
+}
+.so-approval-actions button {
+    min-height: 40px;
+    padding: 9px 15px;
+    border-radius: 11px;
+}
+@media(max-width:520px) {
+    .so-approval-dialog { padding: 19px; }
+    .so-approval-actions { flex-direction: column-reverse; }
+    .so-approval-actions button { width: 100%; }
+}

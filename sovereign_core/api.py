@@ -2,11 +2,14 @@
 from __future__ import annotations
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+import asyncio, io
 import os, secrets, sqlite3, shutil, subprocess, zipfile
+import time
 from pathlib import Path
 from uuid import uuid4
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from pydantic import BaseModel, Field, field_validator
 from dotenv import load_dotenv
 from .workspaces import WorkspaceService
@@ -20,6 +23,11 @@ load_dotenv(PROJECT_ROOT / ".env.local", override=False)
 
 def now():
     return datetime.now(timezone.utc).isoformat()
+
+class VoiceInput(BaseModel):
+    text: str = Field(min_length=1, max_length=3000)
+    rate: float = Field(default=1.14, ge=0.75, le=1.2)
+
 
 class ChatInput(BaseModel):
     message: str = Field(min_length=1, max_length=12000)
@@ -123,16 +131,18 @@ class SovereignAPI:
                                 else AIMessage(content=item["content"]))
             router = self.get_router()
             if payload.images:
-                selected = router.candidates[router.active_index] if router.candidates else None
-                selected_model = selected.info.model.casefold() if selected else ""
-                if not any(marker in selected_model for marker in ("vision", "-vl", ":vl")):
-                    raise HTTPException(409, "Image understanding needs an active vision model. Select OpenRouter Free · nvidia/nemotron-3.5-super-vl:free in Model health, then try again.")
                 content = [{"type": "text", "text": payload.message}]
                 content.extend({"type": "image_url", "image_url": {"url": image}} for image in payload.images)
                 messages.append(HumanMessage(content=content))
             else:
                 messages.append(HumanMessage(content=payload.message))
-            response, info, used_index = (router.invoke(messages, max_tokens=192) if payload.voice_mode else router.invoke(messages))
+            model_started = time.perf_counter()
+            response, info, used_index = router.invoke(
+                messages,
+                max_tokens=192 if payload.voice_mode else None,
+                require_vision=bool(payload.images),
+            )
+            model_latency_ms = round((time.perf_counter() - model_started) * 1000)
             reply = response.content if hasattr(response, "content") else str(response)
             provider, model = info.provider, info.model
         except Exception as exc:
@@ -153,7 +163,8 @@ class SovereignAPI:
         return {"conversation_id": conversation_id, "workspace_id": workspace.id,
                 "reply": reply, "provider": provider, "model": model,
                 "fallback_used": used_index != getattr(router, "active_index", used_index),
-                "selected_model": selected, "runtime": info.runtime}
+                "selected_model": selected, "runtime": info.runtime,
+                "model_latency_ms": model_latency_ms}
 
 
 def create_libreoffice_test_document(workspace_root: Path):
@@ -249,6 +260,147 @@ def create_app(db_path=None, router=None, token=None):
             raise HTTPException(403, "A valid approved local SovereignOS browser origin is required for bootstrap.")
         return {"api_url": "http://127.0.0.1:" + str(int(os.getenv("SOVEREIGN_API_PORT", "8765"))),
                 "token": expected_token, "mode": "local-desktop"}
+
+
+    @app.post("/api/v1/voice/synthesize", dependencies=[Depends(authorize)])
+    async def synthesize_voice(payload: VoiceInput):
+        text = payload.text.strip()
+        if not text:
+            raise HTTPException(422, "Speech text cannot be empty.")
+        try:
+            import edge_tts
+
+            rate_percent = round((payload.rate - 1.0) * 100)
+            communicate = edge_tts.Communicate(
+                text,
+                "en-US-AriaNeural",
+                rate=f"{rate_percent:+d}%"
+            )
+            audio_parts = []
+            async for chunk in communicate.stream():
+                if chunk.get("type") == "audio":
+                    audio_parts.append(chunk["data"])
+
+            audio = b"".join(audio_parts)
+            if not audio:
+                raise HTTPException(502, "Speech provider returned no audio.")
+
+            return Response(
+                content=audio,
+                media_type="audio/mpeg",
+                headers={
+                    "Cache-Control": "no-store, private",
+                    "Pragma": "no-cache",
+                    "X-Content-Type-Options": "nosniff",
+                },
+            )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(
+                502,
+                "Speech generation failed: " + type(exc).__name__
+            ) from exc
+
+
+    @app.post("/api/v1/voice/transcribe", dependencies=[Depends(authorize)])
+    async def transcribe_voice(request: Request):
+        """Transcribe a short in-memory audio clip; never persist the recording."""
+        started = time.perf_counter()
+        max_audio_bytes = 8 * 1024 * 1024
+
+        content_type = request.headers.get("content-type", "")
+        media_type = content_type.split(";", 1)[0].strip().lower()
+        allowed_types = {
+            "audio/webm", "audio/ogg", "audio/mp4", "audio/mpeg",
+            "audio/wav", "audio/x-wav", "audio/aac", "audio/flac",
+            "audio/3gpp", "audio/3gpp2",
+        }
+        if media_type not in allowed_types:
+            raise HTTPException(415, "Unsupported audio format.")
+
+        declared_length = request.headers.get("content-length")
+        if declared_length:
+            try:
+                if int(declared_length) > max_audio_bytes:
+                    raise HTTPException(413, "Audio upload exceeds the 8 MB limit.")
+            except ValueError:
+                raise HTTPException(400, "Invalid Content-Length header.")
+
+        audio_bytes = bytearray()
+        async for chunk in request.stream():
+            audio_bytes.extend(chunk)
+            if len(audio_bytes) > max_audio_bytes:
+                raise HTTPException(413, "Audio upload exceeds the 8 MB limit.")
+
+        if not audio_bytes:
+            raise HTTPException(422, "No audio was received.")
+
+        ffmpeg = shutil.which("ffmpeg")
+        if not ffmpeg:
+            raise HTTPException(503, "The local audio conversion engine is unavailable.")
+
+        try:
+            process = await asyncio.create_subprocess_exec(
+                ffmpeg,
+                "-hide_banner", "-loglevel", "error",
+                "-i", "pipe:0",
+                "-t", "25",
+                "-vn", "-ac", "1", "-ar", "16000",
+                "-f", "wav", "pipe:1",
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            wav_bytes, ffmpeg_error = await asyncio.wait_for(
+                process.communicate(bytes(audio_bytes)),
+                timeout=15,
+            )
+        except asyncio.TimeoutError:
+            if "process" in locals() and process.returncode is None:
+                process.kill()
+                await process.wait()
+            raise HTTPException(504, "Audio conversion timed out.")
+        except OSError:
+            raise HTTPException(503, "Could not start the local audio conversion engine.")
+
+        if process.returncode != 0 or not wav_bytes:
+            raise HTTPException(422, "The received audio could not be decoded.")
+
+        try:
+            import speech_recognition as sr
+
+            recognizer = sr.Recognizer()
+            with sr.AudioFile(io.BytesIO(wav_bytes)) as source:
+                audio_data = recognizer.record(source)
+        except Exception:
+            raise HTTPException(422, "The converted audio could not be read.")
+
+        try:
+            transcript = await asyncio.wait_for(
+                asyncio.to_thread(
+                    recognizer.recognize_google,
+                    audio_data,
+                    language="en-GB",
+                ),
+                timeout=15,
+            )
+        except sr.UnknownValueError:
+            raise HTTPException(422, "Speech could not be understood. Please try again.")
+        except sr.RequestError:
+            raise HTTPException(502, "The speech recognition service is unavailable.")
+        except asyncio.TimeoutError:
+            raise HTTPException(504, "Speech recognition timed out.")
+
+        transcript = transcript.strip()
+        if not transcript:
+            raise HTTPException(422, "No speech was detected.")
+
+        return {
+            "transcript": transcript,
+            "provider": "Google Speech Recognition",
+            "processing_ms": round((time.perf_counter() - started) * 1000),
+        }
 
     @app.get("/api/v1/health")
     def health():
