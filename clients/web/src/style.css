@@ -889,3 +889,66 @@ body:has(#view-chat:not(.hidden)) header {
   .intelligence-workspace{width:100%;max-width:none}
   .composer,.visual-privacy-note{max-width:100%}
 }
+
+
+/* SovereignOS agent planning and approval workflow */
+#view-agent .agent-planner {
+    display: grid;
+    gap: 14px;
+    padding: clamp(18px, 2.5vw, 30px);
+    border-color: #2b557b;
+    background: linear-gradient(145deg, #101f36, #0b1426);
+}
+#view-agent .agent-planner > label {
+    color: #8fc9f5;
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: .16em;
+}
+#view-agent #agent-goal {
+    min-height: 112px;
+    resize: vertical;
+    line-height: 1.65;
+}
+.agent-plan-controls {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 14px;
+}
+.agent-plan-controls small {
+    flex: 1 1 280px;
+    line-height: 1.6;
+}
+.agent-task-heading { margin-top: 28px; }
+.agent-task-list { display: grid; gap: 14px; }
+.agent-task-card, .approval-item {
+    padding: 20px;
+    border: 1px solid #2b3c59;
+    border-radius: 16px;
+    background: #101a2c;
+}
+.agent-task-card h3, .approval-item h3 { margin: 0 0 8px; }
+.agent-task-card > .status-tag { display: inline-flex; margin: 0 0 12px; }
+.agent-task-card p, .approval-item p {
+    color: #b9c7dc;
+    line-height: 1.65;
+    overflow-wrap: anywhere;
+}
+.agent-step-list { display: grid; gap: 10px; padding-left: 22px; }
+.agent-step-list li { padding-left: 4px; }
+.agent-step-list li span, .agent-step-list li small { display: block; }
+.agent-step-list li small { margin-top: 4px; text-transform: capitalize; }
+.approval-item > small {
+    display: block;
+    margin: 0 0 12px;
+    color: #8fc9f5;
+    letter-spacing: .04em;
+}
+.approval-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }
+.approval-actions .danger { border: 1px solid #8b4650; color: #ffd9de; background: #3a1d2a; }
+@media(max-width:520px) {
+    .agent-plan-controls, .approval-actions { align-items: stretch; flex-direction: column; }
+    .agent-plan-controls button, .approval-actions button { width: 100%; }
+    .agent-task-card, .approval-item { padding: 15px; }
+}
