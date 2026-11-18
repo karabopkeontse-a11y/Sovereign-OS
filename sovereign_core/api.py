@@ -612,10 +612,25 @@ def create_app(db_path=None, router=None, token=None):
                 "external sharing, deployment, physical controls and irreversible changes as sensitive. "
                 "The server assigns permissions independently; do not assign permission levels."
             )
-            response, info, used_index = state.get_router().invoke(
+            planner_router = state.get_router()
+            candidate_indices = None
+            if hasattr(planner_router, "candidates"):
+                # Never engage Qwen or dynamic free-model aliases in the agent planner.
+                candidate_indices = [
+                    index for index, candidate in enumerate(planner_router.candidates)
+                    if "qwen" not in candidate.info.model.casefold()
+                    and candidate.info.model.casefold() not in {"openrouter/free", "auto"}
+                ]
+                if not candidate_indices:
+                    raise HTTPException(
+                        409,
+                        "Agent planning is paused: configure an explicitly named non-Qwen model first. Qwen remains offline."
+                    )
+            response, info, used_index = planner_router.invoke(
                 [SystemMessage(content=planning_prompt),
                  HumanMessage(content="Workspace: " + workspace.name + "\nGoal: " + payload.goal)],
                 max_tokens=900,
+                candidate_indices=candidate_indices,
             )
             raw = response.content if hasattr(response, "content") else str(response)
             if isinstance(raw, list):
