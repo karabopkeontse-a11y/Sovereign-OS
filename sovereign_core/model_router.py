@@ -362,7 +362,8 @@ class ModelRouter:
         return rows
 
     def invoke(self, messages, tools=None, start_index: int | None = None,
-               max_tokens: int | None = None, require_vision: bool = False):
+               max_tokens: int | None = None, require_vision: bool = False,
+               candidate_indices: list[int] | None = None):
         """Invoke an eligible model, preferring the manually selected model.
 
         Image requests are restricted to model IDs known to accept visual input;
@@ -381,6 +382,12 @@ class ModelRouter:
             )
         start_index = max(0, min(int(start_index), len(self.candidates) - 1))
         order = list(range(start_index, len(self.candidates))) + list(range(0, start_index))
+        if candidate_indices is not None:
+            allowed = {int(index) for index in candidate_indices
+                       if isinstance(index, int) and 0 <= index < len(self.candidates)}
+            order = [index for index in order if index in allowed]
+            if not order:
+                raise ModelRoutingError("No permitted model candidate is available for this request.")
         if require_vision:
             order = [index for index in order if _supports_vision(self.candidates[index])]
             if not order:
