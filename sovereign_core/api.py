@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field, field_validator
 from dotenv import load_dotenv
 from .workspaces import WorkspaceService
 from .specialists import specialist_for, specialist_prompt
+from .agent_tools import TOOLS as AGENT_TOOLS, execute_workspace_tool, validate_tool_input, verify_workspace_tool, workspace_root
 
 # Load local provider credentials from the project root without overriding
 # environment variables explicitly supplied by the launching process.
@@ -614,11 +615,15 @@ def create_app(db_path=None, router=None, token=None):
                 "You are the planning component of SovereignOS. Convert the user's goal into a "
                 "practical, ordered plan. Return ONLY valid JSON with keys title, description, steps. "
                 "title must be concise. description must restate the goal. steps must contain 2 to 8 "
-                "objects, each with one string field action. Do not write shell commands, code, scripts, "
-                "or pretend to execute anything. Include research, preparation and verification steps "
-                "where relevant. Treat publishing, messaging, purchases, payments, transfers, deletion, "
-                "external sharing, deployment, physical controls and irreversible changes as sensitive. "
-                "The server assigns permissions independently; do not assign permission levels."
+                "objects with action, tool_name, arguments and verification_criterion. tool_name may be null. "
+                "The ONLY available tools are workspace.list_files (arguments: {}), workspace.read_file "
+                "(arguments: {\"path\":\"relative/path.md\"}), and workspace.create_note "
+                "(arguments: {\"filename\":\"draft.md\",\"content\":\"draft text\"}). Use list_files "
+                "or read_file only inside the selected workspace agent folder. Use create_note only to create "
+                "a new Markdown draft in that folder; it requires approval and never overwrites. Set tool_name "
+                "to null when no listed tool fits. Never invent a path, shell command, code, script, network "
+                "request, publishing action, payment, transfer, deletion or physical control. Include "
+                "verification_criterion for every tool step. The server assigns permissions independently."
             )
             planner_router = state.get_router()
             candidate_indices = None
@@ -627,6 +632,7 @@ def create_app(db_path=None, router=None, token=None):
                 candidate_indices = [
                     index for index, candidate in enumerate(planner_router.candidates)
                     if "qwen" not in candidate.info.model.casefold()
+                    and "qwen" not in candidate.info.provider.casefold()
                     and candidate.info.model.casefold() not in {"openrouter/free", "auto"}
                 ]
                 if not candidate_indices:
@@ -657,34 +663,60 @@ def create_app(db_path=None, router=None, token=None):
                 raise ValueError("The planner returned an incomplete plan.")
             actions = []
             for item in proposed:
-                action = str(item.get("action", "") if isinstance(item, dict) else item).strip()
+                if not isinstance(item, dict):
+                    raise ValueError("Every planned step must be a structured object.")
+                action_value = item.get("action")
+                if not isinstance(action_value, str):
+                    raise ValueError("The planner returned a step without a valid action.")
+                action = action_value.strip()
                 if not action or len(action) > 500:
                     raise ValueError("The planner returned an invalid step.")
-                lowered = action.casefold()
-                sensitive = (
-                    "delete", "remove", "publish", "send ", "share", "upload",
-                    "transfer", "pay ", "purchase", "buy ", "submit", "deploy",
-                    "execute", "unlock", "open valve", "control device", "email ",
-                    "post ", "external", "irreversible",
-                )
-                read_only = (
-                    "research", "read ", "list ", "search", "summarize", "summarise",
-                    "analyze", "analyse", "inspect", "review", "compare", "check ",
-                    "verify", "calculate", "identify", "map ", "outline",
-                )
-                if any(term in lowered for term in sensitive):
-                    permission = "high_impact"
-                elif lowered.startswith(read_only):
-                    permission = "read_only"
+                tool_name = item.get("tool_name")
+                arguments = item.get("arguments", {})
+                criterion = item.get("verification_criterion", "")
+                if not isinstance(criterion, str) or len(criterion) > 500:
+                    raise ValueError("The planner returned an invalid verification criterion.")
+                if tool_name is not None:
+                    if not isinstance(tool_name, str):
+                        raise ValueError("The planner returned an invalid tool name.")
+                    arguments = validate_tool_input(tool_name, arguments)
+                    permission = AGENT_TOOLS[tool_name]
+                    if not criterion.strip():
+                        criterion = "Verify the registered workspace tool completed within its scope."
                 else:
-                    # Unknown or mutating work is approval-gated by default.
-                    permission = "external_effect"
-                actions.append((action, permission))
+                    if arguments not in ({}, None):
+                        raise ValueError("A step without a registered tool cannot contain tool arguments.")
+                    lowered = action.casefold()
+                    sensitive = (
+                        "delete", "remove", "publish", "send ", "share", "upload",
+                        "transfer", "pay ", "purchase", "buy ", "submit", "deploy",
+                        "execute", "unlock", "open valve", "control device", "email ",
+                        "post ", "external", "irreversible",
+                    )
+                    read_only = (
+                        "research", "read ", "list ", "search", "summarize", "summarise",
+                        "analyze", "analyse", "inspect", "review", "compare", "check ",
+                        "verify", "calculate", "identify", "map ", "outline",
+                    )
+                    if any(term in lowered for term in sensitive):
+                        permission = "high_impact"
+                    elif lowered.startswith(read_only):
+                        permission = "read_only"
+                    else:
+                        permission = "external_effect"
+                    arguments = {}
+                actions.append((action, permission, tool_name, arguments, criterion))
             tasks = state.workspaces.tasks
             problem = tasks.create_problem(workspace.id, title, description)
             tasks.set_problem_status(problem.id, "diagnosing")
-            steps = [tasks.add_plan_step(problem.id, index, action, permission)
-                     for index, (action, permission) in enumerate(actions, 1)]
+            steps = []
+            for index, (action, permission, tool_name, arguments, criterion) in enumerate(actions, 1):
+                step = tasks.add_plan_step(problem.id, index, action, permission)
+                if tool_name:
+                    tasks.add_step_spec(step.id, tool_name,
+                                        json.dumps(arguments, ensure_ascii=False),
+                                        criterion)
+                steps.append(step)
             tasks.set_problem_status(problem.id, "planned")
             if any(step.status == "awaiting_approval" for step in steps):
                 tasks.set_problem_status(problem.id, "awaiting_approval")
@@ -709,6 +741,7 @@ def create_app(db_path=None, router=None, token=None):
         for problem in tasks.list_problems(workspace.id):
             result.append({"task": problem.__dict__,
                            "steps": [step.__dict__ for step in tasks.list_steps(problem.id)],
+                           "tool_specs": tasks.list_step_specs(problem.id),
                            "approval_events": tasks.list_approval_events(workspace.id, problem.id)})
         return {"tasks": result}
 
@@ -724,7 +757,99 @@ def create_app(db_path=None, router=None, token=None):
         tasks = state.workspaces.tasks
         return {"task": problem.__dict__,
                 "steps": [step.__dict__ for step in tasks.list_steps(problem.id)],
+                "tool_specs": tasks.list_step_specs(problem.id),
                 "approval_events": tasks.list_approval_events(workspace.id, problem.id)}
+
+    @app.post("/api/v1/workspaces/{workspace_id}/agent/tasks/{problem_id}/execute-next", dependencies=[Depends(authorize)])
+    def execute_next_agent_step(workspace_id: str, problem_id: str):
+        try:
+            workspace = state.workspaces.get_workspace(workspace_id)
+        except ValueError:
+            raise HTTPException(404, "Workspace not found")
+        tasks = state.workspaces.tasks
+        problem = tasks.get_problem(problem_id)
+        if not problem or problem.workspace_id != workspace.id:
+            raise HTTPException(404, "Task not found in this workspace")
+        if problem.status in {"blocked", "failed", "completed", "cancelled"}:
+            raise HTTPException(409, "This task is not in an executable state.")
+        selected = None
+        spec = None
+        for candidate in tasks.list_steps(problem.id):
+            candidate_spec = tasks.get_step_spec(candidate.id)
+            if candidate_spec and candidate.status in {"planned", "approved"}:
+                selected, spec = candidate, candidate_spec
+                break
+        if selected is None or spec is None:
+            raise HTTPException(409, "No registered tool step is ready. Review pending approvals or add a supported tool step.")
+        if selected.permission_level != "read_only" and selected.status != "approved":
+            raise HTTPException(403, "This tool step requires explicit approval before execution.")
+        try:
+            arguments = json.loads(spec["input_json"])
+            root = workspace_root(state.db_path.parent / "agent_workspace.sqlite3", workspace.id)
+            # workspace_root resolves its agent folder relative to the supplied database path.
+            if problem.status in {"planned", "awaiting_approval"}:
+                tasks.set_problem_status(problem.id, "running")
+            tasks.update_step_status(selected.id, "running")
+            started_at = now()
+            started_clock = time.perf_counter()
+            result = execute_workspace_tool(spec["tool_name"], arguments, root)
+            passed, criterion, evidence = verify_workspace_tool(
+                spec["tool_name"], arguments, result, root
+            )
+            tasks.update_step_status(selected.id, "verifying")
+            tasks.record_tool_run(
+                selected.id, spec["tool_name"],
+                json.dumps({key: (f"[{len(value)} characters]" if key == "content" and isinstance(value, str) else value)
+                            for key, value in arguments.items()}, ensure_ascii=False),
+                (f"Listed {result.get('count')} workspace files" if spec["tool_name"] == "workspace.list_files"
+                 else f"Read {result.get('path')} ({result.get('bytes')} bytes)" if spec["tool_name"] == "workspace.read_file"
+                 else f"Created {result.get('path')} ({result.get('bytes')} bytes)"),
+                "success" if passed else "verification_failed",
+                started_at, now(),
+            )
+            tasks.record_verification(
+                selected.id, spec["verification_criterion"] or criterion,
+                "server-side workspace boundary and read-back check",
+                passed, evidence,
+            )
+            if not passed:
+                current = tasks.get_problem(problem.id)
+                if current and current.status == "running":
+                    tasks.set_problem_status(problem.id, "failed")
+                raise HTTPException(500, "The tool ran, but its verification check failed.")
+            remaining = tasks.list_steps(problem.id)
+            if remaining and all(item.status == "verified" for item in remaining):
+                tasks.complete_problem(problem.id)
+            output = dict(result)
+            if isinstance(output.get("content"), str) and len(output["content"]) > 20000:
+                output["content"] = output["content"][:20000]
+                output["truncated"] = True
+            return {"task_id": problem.id, "step": tasks.get_step(selected.id).__dict__,
+                    "tool_result": output, "verified": True,
+                    "duration_ms": round((time.perf_counter() - started_clock) * 1000),
+                    "task_status": tasks.get_problem(problem.id).status}
+        except HTTPException:
+            raise
+        except Exception as exc:
+            current_step = tasks.get_step(selected.id)
+            if current_step and current_step.status in {"running", "verifying"}:
+                try:
+                    if current_step.status == "running":
+                        tasks.update_step_status(selected.id, "failed")
+                    else:
+                        tasks.record_verification(
+                            selected.id, spec["verification_criterion"],
+                            "Execution error", False, type(exc).__name__
+                        )
+                except Exception:
+                    pass
+            current_problem = tasks.get_problem(problem.id)
+            if current_problem and current_problem.status == "running":
+                try:
+                    tasks.set_problem_status(problem.id, "failed")
+                except ValueError:
+                    pass
+            raise HTTPException(500, "Agent tool failed safely: " + type(exc).__name__ + ": " + str(exc))
 
     @app.post("/api/v1/workspaces/{workspace_id}/agent/tasks/{problem_id}/steps/{step_id}/decision", dependencies=[Depends(authorize)])
     def decide_agent_step(workspace_id: str, problem_id: str, step_id: str,
