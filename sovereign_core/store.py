@@ -248,7 +248,7 @@ class TaskStore:
     def list_step_specs(self, problem_id: str) -> list[dict]:
         with self._connection() as db:
             rows = db.execute(
-                """SELECT sp.step_id, sp.tool_name, sp.input_json,
+                """SELECT sp.step_id, sp.tool_name,
                           sp.verification_criterion, sp.created_at
                    FROM agent_step_specs sp
                    JOIN plan_steps s ON s.id=sp.step_id
