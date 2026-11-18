@@ -656,8 +656,14 @@ def create_app(db_path=None, router=None, token=None):
                 if raw[:4].casefold() == "json":
                     raw = raw[4:].strip()
             plan = json.loads(raw)
-            title = str(plan.get("title", "")).strip()[:120]
-            description = str(plan.get("description", payload.goal)).strip()[:2000]
+            if not isinstance(plan, dict):
+                raise ValueError("The planner response must be a JSON object.")
+            title_value = plan.get("title")
+            description_value = plan.get("description", payload.goal)
+            if not isinstance(title_value, str) or not isinstance(description_value, str):
+                raise ValueError("The planner returned invalid task metadata.")
+            title = title_value.strip()[:120]
+            description = description_value.strip()[:2000]
             proposed = plan.get("steps")
             if not title or not isinstance(proposed, list) or not 2 <= len(proposed) <= 8:
                 raise ValueError("The planner returned an incomplete plan.")
@@ -785,7 +791,7 @@ def create_app(db_path=None, router=None, token=None):
             raise HTTPException(403, "This tool step requires explicit approval before execution.")
         try:
             arguments = json.loads(spec["input_json"])
-            root = workspace_root(state.db_path.parent / "agent_workspace.sqlite3", workspace.id)
+            root = workspace_root(state.db_path, workspace.id)
             # workspace_root resolves its agent folder relative to the supplied database path.
             if problem.status in {"planned", "awaiting_approval"}:
                 tasks.set_problem_status(problem.id, "running")
