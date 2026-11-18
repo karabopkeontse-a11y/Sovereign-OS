@@ -270,6 +270,8 @@ class SovereignAPITests(unittest.TestCase):
         pending = client.get("/api/v1/approvals?workspace_id="+workspace["id"],
                              headers=self.headers).json()["approvals"]
         self.assertEqual(len(pending), 1)
+        unapproved_file = Path(self.temp.name) / "agent_workspace" / workspace["id"] / "approved-draft.md"
+        self.assertFalse(unapproved_file.exists())
         self.assertEqual(pending[0]["tool_name"], "workspace.create_note")
         self.assertEqual(pending[0]["requested_details"]["filename"], "approved-draft.md")
         self.assertIn("Created by the approved agent tool",
