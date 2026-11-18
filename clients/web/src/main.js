@@ -241,6 +241,10 @@ async function loadAgentTasks(){
     const run=document.createElement("button");run.type="button";run.className="primary";run.textContent="Run next eligible tool step ↗";
     run.onclick=()=>runAgentStep(entry.task.id,run);card.append(run);
    }
+   if(!["completed","cancelled"].includes(entry.task.status)){
+    const cancel=document.createElement("button");cancel.type="button";cancel.className="agent-cancel";cancel.textContent="Cancel task";
+    cancel.onclick=()=>cancelAgentTask(entry.task.id,cancel);card.append(cancel);
+   }
    list.append(card);
   });
  }catch(error){list.textContent="Agent task list unavailable: "+error.message;}
@@ -265,6 +269,15 @@ async function runAgentStep(taskId,button){
   notice("Agent tool could not complete: "+error.message,"error");
   setBusy(button,false);
  }
+}
+async function cancelAgentTask(taskId,button){
+ setBusy(button,true,"Cancelling…");
+ try{
+  await api("/api/v1/workspaces/"+encodeURIComponent(active)+"/agent/tasks/"+encodeURIComponent(taskId)+"/cancel",{method:"POST"});
+  el("agent-plan-feedback").textContent="Task cancelled. Pending approvals and future tool steps are closed.";
+  await loadAgentTasks();await approvals();
+  notice("Agent task cancelled. No further steps can run.");
+ }catch(error){notice("Task could not be cancelled: "+error.message,"error");setBusy(button,false);}
 }
 async function createAgentPlan(){
  const field=el("agent-goal"),button=el("agent-plan-button"),feedback=el("agent-plan-feedback"),goal=field.value.trim();
