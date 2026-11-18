@@ -29,12 +29,9 @@ class FakeRouter:
         return Reply(), Info(), 0
 
 class FakeQwenOnlyRouter(FakeRouter):
-    class CandidateInfo:
-        provider = "Groq"
-        model = "qwen/qwen3.8-27b"
-    class Candidate:
-        info = CandidateInfo()
-    candidates = [Candidate()]
+    candidates = [type("Candidate", (), {
+        "info": type("Info", (), {"provider": "Groq", "model": "qwen/qwen3.8-27b"})()
+    })()]
     def invoke(self, messages, **kwargs):
         raise AssertionError("Qwen must not be invoked by the agent planner")
 
