@@ -873,6 +873,28 @@ def create_app(db_path=None, router=None, token=None):
                     pass
             raise HTTPException(500, "Agent tool failed safely: " + type(exc).__name__ + ": " + str(exc))
 
+    @app.post("/api/v1/workspaces/{workspace_id}/agent/tasks/{problem_id}/cancel", dependencies=[Depends(authorize)])
+    def cancel_agent_task(workspace_id: str, problem_id: str):
+        try:
+            workspace = state.workspaces.get_workspace(workspace_id)
+        except ValueError:
+            raise HTTPException(404, "Workspace not found")
+        tasks = state.workspaces.tasks
+        problem = tasks.get_problem(problem_id)
+        if not problem or problem.workspace_id != workspace.id:
+            raise HTTPException(404, "Task not found in this workspace")
+        if problem.status in {"completed", "cancelled"}:
+            raise HTTPException(409, "This task is already closed.")
+        steps = tasks.list_steps(problem.id)
+        if any(step.status in {"running", "verifying"} for step in steps):
+            raise HTTPException(409, "A tool step is currently running. Wait for it to finish before cancelling.")
+        for step in steps:
+            if step.status in {"planned", "awaiting_approval", "approved", "blocked"}:
+                tasks.update_step_status(step.id, "cancelled")
+        cancelled = tasks.set_problem_status(problem.id, "cancelled")
+        return {"task_id": problem.id, "status": cancelled.status,
+                "pending_approvals_cancelled": True, "execution_started": False}
+
     @app.post("/api/v1/workspaces/{workspace_id}/agent/tasks/{problem_id}/steps/{step_id}/decision", dependencies=[Depends(authorize)])
     def decide_agent_step(workspace_id: str, problem_id: str, step_id: str,
                           payload: AgentDecisionInput):
