@@ -51,6 +51,25 @@ class FakePlanningRouter(FakeRouter):
         return Reply(), Info(), 0
 
 
+class FakeToolPlanningRouter(FakeRouter):
+    def invoke(self, messages, **kwargs):
+        class Reply:
+            content = ('{"title":"Prepare a local workspace draft",'
+                       '"description":"Create a draft inside this workspace agent folder.",'
+                       '"steps":[{"action":"List current workspace files",'
+                       '"tool_name":"workspace.list_files","arguments":{},'
+                       '"verification_criterion":"The file list is returned from the scoped folder."},'
+                       '{"action":"Create the approved Markdown draft",'
+                       '"tool_name":"workspace.create_note",'
+                       '"arguments":{"filename":"approved-draft.md","content":"# Local draft\\nCreated by the approved agent tool."},'
+                       '"verification_criterion":"Read the new note back and confirm its content."}]}')
+        class Info:
+            provider = "Test"
+            model = "planner"
+            runtime = "local"
+        return Reply(), Info(), 0
+
+
 @unittest.skipIf(TestClient is None, "Install requirements-api.txt to run REST API tests")
 class SovereignAPITests(unittest.TestCase):
     def setUp(self):
@@ -228,6 +247,44 @@ class SovereignAPITests(unittest.TestCase):
         self.assertEqual(allowed.status_code, 200)
         self.assertIn("available", allowed.json())
         self.assertIn("ffmpeg_available", allowed.json())
+
+
+    def test_agent_tools_run_only_in_workspace_and_writes_require_approval(self):
+        client = TestClient(create_app(Path(self.temp.name)/"tools.sqlite3",
+                                       router=FakeToolPlanningRouter(), token="test-secret"))
+        workspaces = client.get("/api/v1/workspaces", headers=self.headers).json()["workspaces"]
+        workspace = next(w for w in workspaces if w["name"] == "SovereignOS")
+        created = client.post("/api/v1/workspaces/"+workspace["id"]+"/agent/plan",
+                              headers=self.headers,
+                              json={"goal":"Create and verify a local Markdown draft in this workspace."})
+        self.assertEqual(created.status_code, 200, created.text)
+        task_id = created.json()["task"]["id"]
+        first = client.post("/api/v1/workspaces/"+workspace["id"]+"/agent/tasks/"+task_id+"/execute-next",
+                            headers=self.headers, json={})
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertTrue(first.json()["verified"])
+        self.assertEqual(first.json()["tool_result"]["tool"], "workspace.list_files")
+        blocked = client.post("/api/v1/workspaces/"+workspace["id"]+"/agent/tasks/"+task_id+"/execute-next",
+                              headers=self.headers, json={})
+        self.assertEqual(blocked.status_code, 409)
+        pending = client.get("/api/v1/approvals?workspace_id="+workspace["id"],
+                             headers=self.headers).json()["approvals"]
+        self.assertEqual(len(pending), 1)
+        approval = pending[0]
+        decision = client.post(
+            "/api/v1/workspaces/"+workspace["id"]+"/agent/tasks/"+task_id+
+            "/steps/"+approval["step_id"]+"/decision",
+            headers=self.headers, json={"approved":True,"note":"Approved local draft creation."})
+        self.assertEqual(decision.status_code, 200, decision.text)
+        second = client.post("/api/v1/workspaces/"+workspace["id"]+"/agent/tasks/"+task_id+"/execute-next",
+                             headers=self.headers, json={})
+        self.assertEqual(second.status_code, 200, second.text)
+        self.assertTrue(second.json()["verified"])
+        self.assertEqual(second.json()["task_status"], "completed")
+        state = client.app.state.sovereign
+        created_file = Path(state.db_path).parent / "agent_workspace" / workspace["id"] / "approved-draft.md"
+        self.assertTrue(created_file.is_file())
+        self.assertIn("Created by the approved agent tool", created_file.read_text(encoding="utf-8"))
 
 if __name__ == "__main__":
     unittest.main()
