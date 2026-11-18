@@ -708,7 +708,7 @@ async function startBatchRecognition(session){
     }
    }else{
     if(rms>threshold)micLastVoiceAt=now;
-    if(now-micLastVoiceAt>=750||now-micSpeechStartedAt>=18000)finishUtterance();
+    if(now-micLastVoiceAt>=1100||now-micSpeechStartedAt>=18000)finishUtterance();
    }
 
    if(!micFinalizing)micFrame=requestAnimationFrame(inspectLevel);
