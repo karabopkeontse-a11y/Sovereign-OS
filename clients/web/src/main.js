@@ -81,10 +81,10 @@ async function autoConnectLocal(){
  const preferred=Number(new URLSearchParams(location.search).get("apiPort"))||8765;
  const ports=[...Array(20)].map((_,i)=>preferred+i);
  let lastError="No local SovereignOS API answered the bootstrap request.";
- for(let attempt=0;attempt<12;attempt++){
+ for(let attempt=0;attempt<4;attempt++){
   for(const port of ports){
    try{
-    const response=await fetch("http://127.0.0.1:"+port+"/api/v1/bootstrap",{cache:"no-store"});
+    const response=await fetch("http://127.0.0.1:"+port+"/api/v1/bootstrap",{cache:"no-store",signal:AbortSignal.timeout(900)});
     if(!response.ok){lastError="API port "+port+" returned HTTP "+response.status+" from bootstrap.";continue;}
     const session=await response.json();
     if(!session.api_url||!session.token){lastError="The local API answered without a valid desktop session.";continue;}
@@ -105,7 +105,7 @@ async function connect(){
  el("settings-feedback").textContent="Checking API and authenticatingâ€¦";
  try{
   if(!base||!token)throw Error("Automatic local session is missing. Confirm the SovereignOS desktop engine is running.");
-  const h=await fetch(base.replace(/\/$/,"")+"/api/v1/health");
+  const h=await fetch(base.replace(/\/$/,"")+"/api/v1/health",{cache:"no-store",signal:AbortSignal.timeout(2500)});
   if(!h.ok)throw Error("API health check failed (HTTP "+h.status+")");
   const ws=await api("/api/v1/workspaces");
   workspaces=ws.workspaces;
