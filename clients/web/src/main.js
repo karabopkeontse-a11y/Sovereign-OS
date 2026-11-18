@@ -620,8 +620,12 @@ async function startBatchRecognition(session){
   stopMicrophone(true);
   if(session!==callSession)return;
   voiceBusy=false;
+  callActive=false;
   const denied=error.name==="NotAllowedError"||error.name==="SecurityError";
   setCallState("error",denied?"MICROPHONE BLOCKED":"MICROPHONE ISSUE","I couldn't open your microphone.",denied?"Allow microphone access for localhost in Edge site permissions, then start again.":(error.message||"Check your microphone and try again."));
+  el("call-interrupt").disabled=true;
+  el("call-end").disabled=true;
+  el("call-start").disabled=!(apiConnected&&!!active&&!!routerData?.providers?.length&&voiceCapabilities?.available);
   notice("Could not open microphone: "+(error.message||error.name),"error");
  }
 }
