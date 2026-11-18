@@ -891,6 +891,11 @@ def create_app(db_path=None, router=None, token=None):
         for step in steps:
             if step.status in {"planned", "awaiting_approval", "approved", "blocked"}:
                 tasks.update_step_status(step.id, "cancelled")
+                if step.status == "awaiting_approval":
+                    tasks.record_approval_event(
+                        workspace.id, problem.id, step.id, "cancelled",
+                        "Task cancelled by the workspace owner."
+                    )
         cancelled = tasks.set_problem_status(problem.id, "cancelled")
         return {"task_id": problem.id, "status": cancelled.status,
                 "pending_approvals_cancelled": True, "execution_started": False}
@@ -924,6 +929,10 @@ def create_app(db_path=None, router=None, token=None):
                 # A rejected step closes the task and cancels its other pending requests.
                 for pending_step in remaining:
                     tasks.update_step_status(pending_step.id, "cancelled")
+                    tasks.record_approval_event(
+                        workspace.id, problem.id, pending_step.id, "cancelled",
+                        "Cancelled because another step was rejected."
+                    )
                 current = tasks.get_problem(problem.id)
                 if current and current.status in {"planned", "awaiting_approval", "running"}:
                     tasks.set_problem_status(problem.id, "blocked")
