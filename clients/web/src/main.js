@@ -365,8 +365,20 @@ async function speak(text,session=callSession,preferLocal=true){
                 if(callActive)listenAgain(500);else setCoreState("error");
             }
         };
-        window.speechSynthesis.speak(utterance);
-        return;
+        try{
+            window.speechSynthesis.speak(utterance);
+            return;
+        }catch(error){
+            activeUtterance=null;
+            voiceBusy=false;
+            if(voiceCapabilities?.speech_output_available){
+                appendTranscript("SYSTEM","Browser speech output could not start. Switching to SovereignOS Edge TTS.");
+                return speak(text,session,false);
+            }
+            appendTranscript("SYSTEM","Browser speech output could not start. The response remains available as text.");
+            if(callActive)listenAgain(500);
+            return;
+        }
     }
 
     const controller=new AbortController();
