@@ -292,7 +292,8 @@ async function createAgentPlan(){
  }
  setBusy(button,true,"Planning…");feedback.textContent="Sovereign is structuring the goal into a workspace-specific plan. Nothing is being executed.";
  try{
-  const result=await api("/api/v1/workspaces/"+encodeURIComponent(active)+"/agent/plan",{method:"POST",body:JSON.stringify({goal}),timeoutMs:90000});
+  const allowCloudProcessing=eligibleCloud.length>0&&cloudSessionApproval===approvalKey;
+  const result=await api("/api/v1/workspaces/"+encodeURIComponent(active)+"/agent/plan",{method:"POST",body:JSON.stringify({goal,allow_cloud_processing:allowCloudProcessing}),timeoutMs:90000});
   field.value="";feedback.textContent="Plan saved. "+result.steps.length+" steps created. No tools or external actions were executed.";
   await loadAgentTasks();await approvals();
   notice("Agent plan saved to "+(workspaces.find(w=>w.id===active)?.name||"the active workspace")+".");
