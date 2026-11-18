@@ -980,3 +980,14 @@ body:has(#view-chat:not(.hidden)) header {
     overflow-wrap: anywhere;
     font: 11px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace;
 }
+
+.agent-task-card .agent-cancel {
+    display: inline-flex;
+    margin: 10px 0 0 10px;
+    border: 1px solid #8b4650;
+    border-radius: 10px;
+    padding: 9px 13px;
+    color: #ffd9de;
+    background: #3a1d2a;
+    cursor: pointer;
+}
