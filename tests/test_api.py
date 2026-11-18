@@ -332,6 +332,10 @@ class SovereignAPITests(unittest.TestCase):
         pending = client.get("/api/v1/approvals?workspace_id="+workspace["id"],
                              headers=self.headers).json()["approvals"]
         self.assertEqual(pending, [])
+        detail = client.get("/api/v1/workspaces/"+workspace["id"]+"/agent/tasks/"+task_id,
+                            headers=self.headers).json()
+        self.assertEqual(len(detail["approval_events"]), 1)
+        self.assertEqual(detail["approval_events"][0]["decision"], "cancelled")
         execute = client.post("/api/v1/workspaces/"+workspace["id"]+"/agent/tasks/"+task_id+"/execute-next",
                               headers=self.headers)
         self.assertEqual(execute.status_code, 409)
