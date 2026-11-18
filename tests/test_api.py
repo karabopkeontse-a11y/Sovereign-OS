@@ -28,6 +28,21 @@ class FakeRouter:
             runtime = "cloud"
         return Reply(), Info(), 0
 
+class FakePlanningRouter(FakeRouter):
+    def invoke(self, messages, **kwargs):
+        class Reply:
+            content = ('{"title":"Prepare a safe launch plan",'
+                       '"description":"Prepare the workspace launch materials and review before publication.",'
+                       '"steps":[{"action":"Research current launch requirements"},'
+                       '{"action":"Draft launch copy in the workspace"},'
+                       '{"action":"Publish the launch announcement"}]}')
+        class Info:
+            provider = "Test"
+            model = "planner"
+            runtime = "local"
+        return Reply(), Info(), 0
+
+
 @unittest.skipIf(TestClient is None, "Install requirements-api.txt to run REST API tests")
 class SovereignAPITests(unittest.TestCase):
     def setUp(self):
@@ -125,6 +140,66 @@ class SovereignAPITests(unittest.TestCase):
         result=self.client.post("/api/v1/iot/commands",headers=self.headers,
                                 json={"command":"open_valve"})
         self.assertEqual(result.status_code,403)
+
+
+    def test_agent_plan_is_persisted_and_sensitive_steps_need_approval(self):
+        client = TestClient(create_app(Path(self.temp.name)/"planner.sqlite3",
+                                       router=FakePlanningRouter(), token="test-secret"))
+        workspaces = client.get("/api/v1/workspaces", headers=self.headers).json()["workspaces"]
+        workspace = next(w for w in workspaces if w["name"] == "Nikolai Creative Studio")
+        result = client.post("/api/v1/workspaces/"+workspace["id"]+"/agent/plan",
+                             headers=self.headers,
+                             json={"goal":"Prepare a safe launch plan for the new campaign."})
+        self.assertEqual(result.status_code, 200, result.text)
+        data = result.json()
+        self.assertFalse(data["execution_started"])
+        self.assertEqual(len(data["steps"]), 3)
+        self.assertEqual(data["steps"][0]["permission_level"], "read_only")
+        self.assertEqual(data["steps"][1]["status"], "awaiting_approval")
+        self.assertEqual(data["steps"][2]["permission_level"], "high_impact")
+        self.assertEqual(data["task"]["status"], "awaiting_approval")
+
+    def test_approval_queue_is_workspace_scoped_and_audited(self):
+        client = TestClient(create_app(Path(self.temp.name)/"approval.sqlite3",
+                                       router=FakePlanningRouter(), token="test-secret"))
+        workspaces = client.get("/api/v1/workspaces", headers=self.headers).json()["workspaces"]
+        workspace = next(w for w in workspaces if w["name"] == "Yard Truths")
+        created = client.post("/api/v1/workspaces/"+workspace["id"]+"/agent/plan",
+                              headers=self.headers,
+                              json={"goal":"Prepare a safe launch plan for the new campaign."})
+        self.assertEqual(created.status_code, 200, created.text)
+        pending = client.get("/api/v1/approvals?workspace_id="+workspace["id"],
+                             headers=self.headers).json()["approvals"]
+        self.assertEqual(len(pending), 2)
+        first = pending[0]
+        decision = client.post(
+            "/api/v1/workspaces/"+workspace["id"]+"/agent/tasks/"+first["problem_id"]+
+            "/steps/"+first["step_id"]+"/decision",
+            headers=self.headers, json={"approved":True,"note":"Reviewed by owner."})
+        self.assertEqual(decision.status_code, 200, decision.text)
+        self.assertFalse(decision.json()["execution_started"])
+        tasks = client.get("/api/v1/workspaces/"+workspace["id"]+"/agent/tasks",
+                           headers=self.headers).json()["tasks"]
+        events = tasks[0]["approval_events"]
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["decision"], "approved")
+        remaining = client.get("/api/v1/approvals?workspace_id="+workspace["id"],
+                               headers=self.headers).json()["approvals"]
+        self.assertEqual(len(remaining), 1)
+
+    def test_agent_task_cannot_be_read_from_another_workspace(self):
+        client = TestClient(create_app(Path(self.temp.name)/"scope.sqlite3",
+                                       router=FakePlanningRouter(), token="test-secret"))
+        workspaces = client.get("/api/v1/workspaces", headers=self.headers).json()["workspaces"]
+        a = next(w for w in workspaces if w["name"] == "Nikolai Creative Studio")
+        b = next(w for w in workspaces if w["name"] == "Yard Truths")
+        created = client.post("/api/v1/workspaces/"+a["id"]+"/agent/plan",
+                              headers=self.headers,
+                              json={"goal":"Prepare a safe launch plan for the new campaign."})
+        problem_id = created.json()["task"]["id"]
+        other = client.get("/api/v1/workspaces/"+b["id"]+"/agent/tasks/"+problem_id,
+                           headers=self.headers)
+        self.assertEqual(other.status_code, 404)
 
 if __name__ == "__main__":
     unittest.main()
