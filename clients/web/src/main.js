@@ -420,14 +420,14 @@ async function transcribeVoiceBlob(blob,session){
   if(session!==callSession||error.name==="AbortError")return;
   voiceBusy=false;
   appendTranscript("SYSTEM","Voice input issue: "+(error.message||"transcription failed"));
-  const permanent=/FFmpeg|SpeechRecognition package|Speech recognition service is unavailable|timed out|could not be decoded|Unsupported audio format|exceeds the 8 MB/i.test(error.message||"");
+  const permanent=/FFmpeg|audio conversion engine is unavailable|SpeechRecognition package|Speech recognition service is unavailable|timed out|could not be decoded|Unsupported audio format|exceeds the 8 MB/i.test(error.message||"");
   if(permanent){
    callActive=false;
    stopMicrophone(true);
    setCallState("error","VOICE SERVICE ISSUE","Voice input needs attention.",(error.message||"The voice service failed.")+" You can continue by typing below.");
    el("call-interrupt").disabled=true;
    el("call-end").disabled=true;
-   updateCallSupport();
+   el("call-start").disabled=!(navigator.mediaDevices?.getUserMedia&&window.MediaRecorder&&(window.AudioContext||window.webkitAudioContext)&&apiConnected&&!!active&&!!routerData?.providers?.length&&voiceCapabilities?.available);
   }else{
    setCallState("error","VOICE INPUT ISSUE","I couldn't hear that clearly.",error.message||"Please try again.");
    if(callActive)listenAgain(900);
