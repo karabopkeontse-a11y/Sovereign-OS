@@ -2,7 +2,7 @@
 from __future__ import annotations
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-import asyncio, io
+import asyncio, io, json
 import os, secrets, sqlite3, shutil, subprocess, zipfile
 import time
 from pathlib import Path
@@ -49,6 +49,15 @@ class GroupChatInput(BaseModel):
     message: str = Field(min_length=1, max_length=12000)
     conversation_id: str | None = None
     specialist_ids: list[str] = Field(min_length=2, max_length=4)
+
+class AgentPlanInput(BaseModel):
+    goal: str = Field(min_length=10, max_length=4000)
+
+
+class AgentDecisionInput(BaseModel):
+    approved: bool
+    note: str = Field(default="", max_length=1000)
+
 
 class ModelSelectInput(BaseModel):
     provider: str = Field(min_length=1, max_length=80)
@@ -261,6 +270,25 @@ def create_app(db_path=None, router=None, token=None):
         return {"api_url": "http://127.0.0.1:" + str(int(os.getenv("SOVEREIGN_API_PORT", "8765"))),
                 "token": expected_token, "mode": "local-desktop"}
 
+
+    @app.get("/api/v1/voice/status", dependencies=[Depends(authorize)])
+    def voice_status():
+        ffmpeg_available = shutil.which("ffmpeg") is not None
+        try:
+            import speech_recognition  # noqa: F401
+            recognition_available = True
+        except ImportError:
+            recognition_available = False
+        available = ffmpeg_available and recognition_available
+        if not ffmpeg_available:
+            reason = "FFmpeg is not installed or is not on PATH. Voice capture cannot be converted for transcription."
+        elif not recognition_available:
+            reason = "The SpeechRecognition package is not installed in the API environment."
+        else:
+            reason = "Voice transcription dependencies are available. Speech recognition still requires an internet connection."
+        return {"available": available, "ffmpeg_available": ffmpeg_available,
+                "recognition_available": recognition_available,
+                "provider": "Google Speech Recognition", "reason": reason}
 
     @app.post("/api/v1/voice/synthesize", dependencies=[Depends(authorize)])
     async def synthesize_voice(payload: VoiceInput):
@@ -562,9 +590,172 @@ def create_app(db_path=None, router=None, token=None):
         if device_id not in samples:
             raise HTTPException(404, "Device not found")
         return {"device_id": device_id, "simulation": True, **samples[device_id]}
+    @app.post("/api/v1/workspaces/{workspace_id}/agent/plan", dependencies=[Depends(authorize)])
+    def create_agent_plan(workspace_id: str, payload: AgentPlanInput):
+        try:
+            workspace = state.workspaces.get_workspace(workspace_id)
+        except ValueError:
+            raise HTTPException(404, "Workspace not found")
+        try:
+            from langchain_core.messages import HumanMessage, SystemMessage
+            planning_prompt = (
+                "You are the planning component of SovereignOS. Convert the user's goal into a "
+                "practical, ordered plan. Return ONLY valid JSON with keys title, description, steps. "
+                "title must be concise. description must restate the goal. steps must contain 2 to 8 "
+                "objects, each with one string field action. Do not write shell commands, code, scripts, "
+                "or pretend to execute anything. Include research, preparation and verification steps "
+                "where relevant. Treat publishing, messaging, purchases, payments, transfers, deletion, "
+                "external sharing, deployment, physical controls and irreversible changes as sensitive. "
+                "The server assigns permissions independently; do not assign permission levels."
+            )
+            response, info, used_index = state.get_router().invoke(
+                [SystemMessage(content=planning_prompt),
+                 HumanMessage(content="Workspace: " + workspace.name + "\nGoal: " + payload.goal)],
+                max_tokens=900,
+            )
+            raw = response.content if hasattr(response, "content") else str(response)
+            if isinstance(raw, list):
+                raw = "\n".join(str(item.get("text", "")) if isinstance(item, dict) else str(item)
+                                 for item in raw)
+            raw = str(raw).strip()
+            if raw.startswith("```"):
+                raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+                if raw[:4].casefold() == "json":
+                    raw = raw[4:].strip()
+            plan = json.loads(raw)
+            title = str(plan.get("title", "")).strip()[:120]
+            description = str(plan.get("description", payload.goal)).strip()[:2000]
+            proposed = plan.get("steps")
+            if not title or not isinstance(proposed, list) or not 2 <= len(proposed) <= 8:
+                raise ValueError("The planner returned an incomplete plan.")
+            actions = []
+            for item in proposed:
+                action = str(item.get("action", "") if isinstance(item, dict) else item).strip()
+                if not action or len(action) > 500:
+                    raise ValueError("The planner returned an invalid step.")
+                lowered = action.casefold()
+                sensitive = (
+                    "delete", "remove", "publish", "send ", "share", "upload",
+                    "transfer", "pay ", "purchase", "buy ", "submit", "deploy",
+                    "execute", "unlock", "open valve", "control device", "email ",
+                    "post ", "external", "irreversible",
+                )
+                read_only = (
+                    "research", "read ", "list ", "search", "summarize", "summarise",
+                    "analyze", "analyse", "inspect", "review", "compare", "check ",
+                    "verify", "calculate", "identify", "map ", "outline",
+                )
+                if any(term in lowered for term in sensitive):
+                    permission = "high_impact"
+                elif lowered.startswith(read_only):
+                    permission = "read_only"
+                else:
+                    # Unknown or mutating work is approval-gated by default.
+                    permission = "external_effect"
+                actions.append((action, permission))
+            tasks = state.workspaces.tasks
+            problem = tasks.create_problem(workspace.id, title, description)
+            tasks.set_problem_status(problem.id, "diagnosing")
+            steps = [tasks.add_plan_step(problem.id, index, action, permission)
+                     for index, (action, permission) in enumerate(actions, 1)]
+            tasks.set_problem_status(problem.id, "planned")
+            if any(step.status == "awaiting_approval" for step in steps):
+                tasks.set_problem_status(problem.id, "awaiting_approval")
+            return {"task": tasks.get_problem(problem.id).__dict__,
+                    "steps": [step.__dict__ for step in steps],
+                    "planner": {"provider": info.provider, "model": info.model},
+                    "execution_started": False,
+                    "note": "Plan saved. No tools or external actions have been executed."}
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(503, "Could not create a validated agent plan: " + type(exc).__name__ + ": " + str(exc))
+
+    @app.get("/api/v1/workspaces/{workspace_id}/agent/tasks", dependencies=[Depends(authorize)])
+    def list_agent_tasks(workspace_id: str):
+        try:
+            workspace = state.workspaces.get_workspace(workspace_id)
+        except ValueError:
+            raise HTTPException(404, "Workspace not found")
+        tasks = state.workspaces.tasks
+        result = []
+        for problem in tasks.list_problems(workspace.id):
+            result.append({"task": problem.__dict__,
+                           "steps": [step.__dict__ for step in tasks.list_steps(problem.id)],
+                           "approval_events": tasks.list_approval_events(workspace.id, problem.id)})
+        return {"tasks": result}
+
+    @app.get("/api/v1/workspaces/{workspace_id}/agent/tasks/{problem_id}", dependencies=[Depends(authorize)])
+    def get_agent_task(workspace_id: str, problem_id: str):
+        try:
+            workspace = state.workspaces.get_workspace(workspace_id)
+        except ValueError:
+            raise HTTPException(404, "Workspace not found")
+        problem = state.workspaces.tasks.get_problem(problem_id)
+        if not problem or problem.workspace_id != workspace.id:
+            raise HTTPException(404, "Task not found in this workspace")
+        tasks = state.workspaces.tasks
+        return {"task": problem.__dict__,
+                "steps": [step.__dict__ for step in tasks.list_steps(problem.id)],
+                "approval_events": tasks.list_approval_events(workspace.id, problem.id)}
+
+    @app.post("/api/v1/workspaces/{workspace_id}/agent/tasks/{problem_id}/steps/{step_id}/decision", dependencies=[Depends(authorize)])
+    def decide_agent_step(workspace_id: str, problem_id: str, step_id: str,
+                          payload: AgentDecisionInput):
+        try:
+            workspace = state.workspaces.get_workspace(workspace_id)
+        except ValueError:
+            raise HTTPException(404, "Workspace not found")
+        tasks = state.workspaces.tasks
+        problem = tasks.get_problem(problem_id)
+        if not problem or problem.workspace_id != workspace.id:
+            raise HTTPException(404, "Task not found in this workspace")
+        step = next((item for item in tasks.list_steps(problem.id) if item.id == step_id), None)
+        if not step:
+            raise HTTPException(404, "Plan step not found in this task")
+        if step.status != "awaiting_approval":
+            raise HTTPException(409, "This step is no longer awaiting approval.")
+        decision = "approved" if payload.approved else "rejected"
+        try:
+            tasks.update_step_status(step.id, "approved" if payload.approved else "cancelled")
+            event = tasks.record_approval_event(workspace.id, problem.id, step.id,
+                                                decision, payload.note)
+            remaining = [item for item in tasks.list_steps(problem.id)
+                         if item.status == "awaiting_approval"]
+            if not payload.approved:
+                if problem.status == "awaiting_approval":
+                    tasks.set_problem_status(problem.id, "blocked")
+            elif not remaining and problem.status == "awaiting_approval":
+                tasks.set_problem_status(problem.id, "planned")
+            return {"decision": event, "task_status": tasks.get_problem(problem.id).status,
+                    "execution_started": False}
+        except ValueError as exc:
+            raise HTTPException(409, str(exc))
+
     @app.get("/api/v1/approvals", dependencies=[Depends(authorize)])
-    def approvals():
-        return {"approvals": [], "note": "Remote approval queue is not configured."}
+    def approvals(workspace_id: str | None = None):
+        db = state.connection()
+        try:
+            sql = ("SELECT s.id AS step_id, s.step_number, s.action, s.permission_level, "
+                   "s.status AS step_status, p.id AS problem_id, p.title AS task_title, "
+                   "p.description AS task_description, p.status AS task_status, "
+                   "p.workspace_id, w.name AS workspace_name "
+                   "FROM plan_steps s JOIN problems p ON p.id=s.problem_id "
+                   "JOIN workspaces w ON w.id=p.workspace_id WHERE s.status='awaiting_approval'")
+            params = []
+            if workspace_id:
+                try:
+                    state.workspaces.get_workspace(workspace_id)
+                except ValueError:
+                    raise HTTPException(404, "Workspace not found")
+                sql += " AND p.workspace_id=?"
+                params.append(workspace_id)
+            sql += " ORDER BY p.created_at, s.step_number"
+            rows = db.execute(sql, params).fetchall()
+            return {"approvals": [dict(row) for row in rows],
+                    "note": "Approval decisions are persisted. Approval does not itself execute an action."}
+        finally:
+            db.close()
     @app.post("/api/v1/iot/commands", dependencies=[Depends(authorize)])
     def iot_command(payload: CommandInput):
         raise HTTPException(403, "Physical commands disabled until a trusted gateway, device identity and human approval are configured.")
