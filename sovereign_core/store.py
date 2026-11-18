@@ -77,6 +77,12 @@ class TaskStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_approval_events_workspace
                     ON approval_events(workspace_id, created_at);
+                CREATE TABLE IF NOT EXISTS agent_step_specs (
+                    step_id TEXT PRIMARY KEY, tool_name TEXT NOT NULL,
+                    input_json TEXT NOT NULL, verification_criterion TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(step_id) REFERENCES plan_steps(id)
+                );
                 CREATE TABLE IF NOT EXISTS memory_records (
                     id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, kind TEXT NOT NULL,
                     content TEXT NOT NULL, source TEXT NOT NULL, confidence REAL NOT NULL,
@@ -209,6 +215,47 @@ class TaskStore:
                        (str(uuid4()), step_id, tool_name, input_summary, output_summary,
                         outcome, started_at, ended_at))
 
+
+
+    def add_step_spec(self, step_id: str, tool_name: str,
+                      input_json: str, verification_criterion: str) -> dict:
+        if not self.get_step(step_id):
+            raise ValueError("Plan step does not exist")
+        item = {
+            "step_id": step_id, "tool_name": tool_name,
+            "input_json": input_json,
+            "verification_criterion": (verification_criterion or "").strip()[:500],
+            "created_at": _now(),
+        }
+        with self._connection() as db:
+            db.execute("INSERT OR REPLACE INTO agent_step_specs VALUES (?, ?, ?, ?, ?)",
+                       tuple(item.values()))
+        return item
+
+    def get_step(self, step_id: str) -> PlanStep | None:
+        with self._connection() as db:
+            row = db.execute(
+                "SELECT s.* FROM plan_steps s WHERE s.id=?", (step_id,)
+            ).fetchone()
+        return PlanStep(**dict(row)) if row else None
+
+    def get_step_spec(self, step_id: str) -> dict | None:
+        with self._connection() as db:
+            row = db.execute("SELECT * FROM agent_step_specs WHERE step_id=?",
+                             (step_id,)).fetchone()
+        return dict(row) if row else None
+
+    def list_step_specs(self, problem_id: str) -> list[dict]:
+        with self._connection() as db:
+            rows = db.execute(
+                """SELECT sp.step_id, sp.tool_name, sp.input_json,
+                          sp.verification_criterion, sp.created_at
+                   FROM agent_step_specs sp
+                   JOIN plan_steps s ON s.id=sp.step_id
+                   WHERE s.problem_id=? ORDER BY s.step_number""",
+                (problem_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def record_approval_event(self, workspace_id: str, problem_id: str,
                               step_id: str, decision: str, note: str = "") -> dict:
