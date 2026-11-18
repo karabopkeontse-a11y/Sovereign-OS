@@ -291,6 +291,30 @@ class SovereignAPITests(unittest.TestCase):
         self.assertTrue(created_file.is_file())
         self.assertIn("Created by the approved agent tool", created_file.read_text(encoding="utf-8"))
 
+
+    def test_rejecting_a_step_blocks_task_and_cancels_other_pending_steps(self):
+        client = TestClient(create_app(Path(self.temp.name)/"reject.sqlite3",
+                                       router=FakePlanningRouter(), token="test-secret"))
+        workspaces = client.get("/api/v1/workspaces", headers=self.headers).json()["workspaces"]
+        workspace = next(w for w in workspaces if w["name"] == "Nikolai Creative Studio")
+        created = client.post("/api/v1/workspaces/"+workspace["id"]+"/agent/plan",
+                              headers=self.headers,
+                              json={"goal":"Prepare a safe launch plan for the new campaign."})
+        task_id = created.json()["task"]["id"]
+        pending = client.get("/api/v1/approvals?workspace_id="+workspace["id"],
+                             headers=self.headers).json()["approvals"]
+        self.assertEqual(len(pending), 2)
+        first = pending[0]
+        rejected = client.post(
+            "/api/v1/workspaces/"+workspace["id"]+"/agent/tasks/"+task_id+
+            "/steps/"+first["step_id"]+"/decision",
+            headers=self.headers, json={"approved":False,"note":"Not approved."})
+        self.assertEqual(rejected.status_code, 200, rejected.text)
+        self.assertEqual(rejected.json()["task_status"], "blocked")
+        remaining = client.get("/api/v1/approvals?workspace_id="+workspace["id"],
+                               headers=self.headers).json()["approvals"]
+        self.assertEqual(remaining, [])
+
 if __name__ == "__main__":
     unittest.main()
 
