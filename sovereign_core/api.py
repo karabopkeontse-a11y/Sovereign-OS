@@ -279,16 +279,24 @@ def create_app(db_path=None, router=None, token=None):
             recognition_available = True
         except ImportError:
             recognition_available = False
-        available = ffmpeg_available and recognition_available
+        try:
+            import edge_tts  # noqa: F401
+            speech_output_available = True
+        except ImportError:
+            speech_output_available = False
+        available = ffmpeg_available and recognition_available and speech_output_available
         if not ffmpeg_available:
             reason = "FFmpeg is not installed or is not on PATH. Voice capture cannot be converted for transcription."
         elif not recognition_available:
             reason = "The SpeechRecognition package is not installed in the API environment."
+        elif not speech_output_available:
+            reason = "The Edge TTS package is not installed in the API environment."
         else:
-            reason = "Voice transcription dependencies are available. Speech recognition still requires an internet connection."
+            reason = "Voice dependencies are available. Google Speech Recognition requires an internet connection."
         return {"available": available, "ffmpeg_available": ffmpeg_available,
                 "recognition_available": recognition_available,
-                "provider": "Google Speech Recognition", "reason": reason}
+                "speech_output_available": speech_output_available,
+                "provider": "Google Speech Recognition + Edge TTS", "reason": reason}
 
     @app.post("/api/v1/voice/synthesize", dependencies=[Depends(authorize)])
     async def synthesize_voice(payload: VoiceInput):
