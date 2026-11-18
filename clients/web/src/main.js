@@ -310,7 +310,7 @@ function updateCallSupport(){
  const supported=!!(navigator.mediaDevices?.getUserMedia&&window.MediaRecorder&&(window.AudioContext||window.webkitAudioContext));
  const ready=apiConnected&&!!active;
  const modelReady=!!routerData?.providers?.length;
- const voiceReady=voiceCapabilities?.available===true;
+ const voiceReady=!!voiceCapabilities?.available&& (!!window.speechSynthesis||voiceCapabilities?.speech_output_available===true);
  el("call-start").disabled=!supported||!ready||!modelReady||!voiceReady||callActive;
  if(!supported)el("call-description").textContent="Microphone capture is unavailable in this browser. Open SovereignOS in Microsoft Edge and allow microphone access for localhost.";
  else if(!apiConnected)el("call-description").textContent="Connect the SovereignOS API in Settings first.";
@@ -514,7 +514,7 @@ async function transcribeVoiceBlob(blob,session){
    setCallState("error","VOICE SERVICE ISSUE","Voice input needs attention.",(error.message||"The voice service failed.")+" You can continue by typing below.");
    el("call-interrupt").disabled=true;
    el("call-end").disabled=true;
-   el("call-start").disabled=!(navigator.mediaDevices?.getUserMedia&&window.MediaRecorder&&(window.AudioContext||window.webkitAudioContext)&&apiConnected&&!!active&&!!routerData?.providers?.length&&voiceCapabilities?.available);
+   el("call-start").disabled=!(navigator.mediaDevices?.getUserMedia&&window.MediaRecorder&&(window.AudioContext||window.webkitAudioContext)&&apiConnected&&!!active&&!!routerData?.providers?.length&&voiceCapabilities?.available&&(window.speechSynthesis||voiceCapabilities?.speech_output_available));
   }else{
    setCallState("error","VOICE INPUT ISSUE","I couldn't hear that clearly.",error.message||"Please try again.");
    if(callActive)listenAgain(900);
@@ -737,7 +737,7 @@ function listenAgain(delay=350){
 }
 
 function startCall(){
- if(!voiceCapabilities?.available){
+ if(!voiceCapabilities?.available||(!window.speechSynthesis&&!voiceCapabilities?.speech_output_available)){
   notice(voiceCapabilities?.reason||"Voice services are still being checked. Reconnect the local API and try again.","warning");
   return;
  }
