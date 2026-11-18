@@ -70,6 +70,16 @@ class FakeToolPlanningRouter(FakeRouter):
         return Reply(), Info(), 0
 
 
+class FakeCloudOnlyRouter(FakePlanningRouter):
+    calls = 0
+    candidates = [type("Candidate", (), {
+        "info": type("Info", (), {"provider": "Test Cloud", "model": "safe-cloud-model", "runtime": "cloud"})()
+    })()]
+    def invoke(self, messages, **kwargs):
+        self.calls += 1
+        return super().invoke(messages, **kwargs)
+
+
 @unittest.skipIf(TestClient is None, "Install requirements-api.txt to run REST API tests")
 class SovereignAPITests(unittest.TestCase):
     def setUp(self):
@@ -339,6 +349,24 @@ class SovereignAPITests(unittest.TestCase):
         execute = client.post("/api/v1/workspaces/"+workspace["id"]+"/agent/tasks/"+task_id+"/execute-next",
                               headers=self.headers)
         self.assertEqual(execute.status_code, 409)
+
+
+    def test_agent_planner_requires_server_verified_cloud_consent(self):
+        router = FakeCloudOnlyRouter()
+        client = TestClient(create_app(Path(self.temp.name)/"cloud-consent.sqlite3",
+                                       router=router, token="test-secret"))
+        workspaces = client.get("/api/v1/workspaces", headers=self.headers).json()["workspaces"]
+        workspace = next(w for w in workspaces if w["name"] == "SovereignOS")
+        path = "/api/v1/workspaces/"+workspace["id"]+"/agent/plan"
+        denied = client.post(path, headers=self.headers,
+                             json={"goal":"Prepare a safe plan for a project milestone."})
+        self.assertEqual(denied.status_code, 403)
+        self.assertEqual(router.calls, 0)
+        allowed = client.post(path, headers=self.headers,
+                              json={"goal":"Prepare a safe plan for a project milestone.",
+                                    "allow_cloud_processing":True})
+        self.assertEqual(allowed.status_code, 200, allowed.text)
+        self.assertEqual(router.calls, 1)
 
 if __name__ == "__main__":
     unittest.main()
