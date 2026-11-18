@@ -112,5 +112,24 @@ class ModelRouterTests(unittest.TestCase):
         self.assertTrue(any("disabled" in warning for warning in router.configuration_warnings))
 
 
+
+    def test_candidate_allowlist_prevents_qwen_fallback(self):
+        router = ModelRouter(environ={})
+        router.candidates = [
+            candidate("Groq", "qwen/qwen3.8-27b", "must not run"),
+            candidate("Provider B", "safe-model", "approved candidate"),
+            candidate("Provider C", "other-model", "must not run either"),
+        ]
+        result, info, index = router.invoke([], candidate_indices=[1])
+        self.assertEqual(result, "approved candidate")
+        self.assertEqual(info.model, "safe-model")
+        self.assertEqual(index, 1)
+
+    def test_empty_candidate_allowlist_fails_closed(self):
+        router = ModelRouter(environ={})
+        router.candidates = [candidate("Groq", "qwen/qwen3.8-27b", "must not run")]
+        with self.assertRaises(ModelRoutingError):
+            router.invoke([], candidate_indices=[])
+
 if __name__ == "__main__":
     unittest.main()
