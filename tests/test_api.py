@@ -281,8 +281,7 @@ class SovereignAPITests(unittest.TestCase):
         self.assertEqual(second.status_code, 200, second.text)
         self.assertTrue(second.json()["verified"])
         self.assertEqual(second.json()["task_status"], "completed")
-        state = client.app.state.sovereign
-        created_file = Path(state.db_path).parent / "agent_workspace" / workspace["id"] / "approved-draft.md"
+        created_file = Path(self.temp.name) / "agent_workspace" / workspace["id"] / "approved-draft.md"
         self.assertTrue(created_file.is_file())
         self.assertIn("Created by the approved agent tool", created_file.read_text(encoding="utf-8"))
 
