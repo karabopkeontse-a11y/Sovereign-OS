@@ -865,3 +865,27 @@ body:has(#view-chat:not(.hidden)) header {
     .so-approval-actions { flex-direction: column-reverse; }
     .so-approval-actions button { width: 100%; }
 }
+
+
+/* Roomier intelligence workspace: give the conversation the available screen. */
+@media (min-width:851px){
+  main:has(#view-chat:not(.hidden)){max-width:none;padding:14px clamp(18px,2.2vw,38px)}
+  #view-chat{width:100%;min-width:0}
+  .intelligence-workspace{
+    width:100%;max-width:none;
+    height:calc(100dvh - 150px);
+    min-height:560px;
+  }
+  .chatpanel{width:100%;min-width:0}
+  .messages{padding:clamp(24px,3vw,48px)}
+  .composer{width:min(94%,1120px);max-width:1120px}
+  .visual-privacy-note{width:min(94%,1120px);max-width:1120px}
+  .bubble{max-width:min(88%,1100px)}
+}
+@media (min-width:851px) and (max-height:760px){
+  .intelligence-workspace{height:calc(100dvh - 128px);min-height:480px}
+}
+@media (max-width:850px){
+  .intelligence-workspace{width:100%;max-width:none}
+  .composer,.visual-privacy-note{max-width:100%}
+}
