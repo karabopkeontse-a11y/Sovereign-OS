@@ -315,6 +315,27 @@ class SovereignAPITests(unittest.TestCase):
                                headers=self.headers).json()["approvals"]
         self.assertEqual(remaining, [])
 
+
+    def test_agent_task_can_be_cancelled_and_pending_approvals_are_closed(self):
+        client = TestClient(create_app(Path(self.temp.name)/"cancel.sqlite3",
+                                       router=FakeToolPlanningRouter(), token="test-secret"))
+        workspaces = client.get("/api/v1/workspaces", headers=self.headers).json()["workspaces"]
+        workspace = next(w for w in workspaces if w["name"] == "SovereignOS")
+        created = client.post("/api/v1/workspaces/"+workspace["id"]+"/agent/plan",
+                              headers=self.headers,
+                              json={"goal":"Create and verify a local Markdown draft in this workspace."})
+        task_id = created.json()["task"]["id"]
+        cancelled = client.post("/api/v1/workspaces/"+workspace["id"]+"/agent/tasks/"+task_id+"/cancel",
+                                headers=self.headers)
+        self.assertEqual(cancelled.status_code, 200, cancelled.text)
+        self.assertEqual(cancelled.json()["status"], "cancelled")
+        pending = client.get("/api/v1/approvals?workspace_id="+workspace["id"],
+                             headers=self.headers).json()["approvals"]
+        self.assertEqual(pending, [])
+        execute = client.post("/api/v1/workspaces/"+workspace["id"]+"/agent/tasks/"+task_id+"/execute-next",
+                              headers=self.headers)
+        self.assertEqual(execute.status_code, 409)
+
 if __name__ == "__main__":
     unittest.main()
 
