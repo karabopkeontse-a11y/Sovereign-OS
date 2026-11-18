@@ -270,6 +270,10 @@ class SovereignAPITests(unittest.TestCase):
         pending = client.get("/api/v1/approvals?workspace_id="+workspace["id"],
                              headers=self.headers).json()["approvals"]
         self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]["tool_name"], "workspace.create_note")
+        self.assertEqual(pending[0]["requested_details"]["filename"], "approved-draft.md")
+        self.assertIn("Created by the approved agent tool",
+                      pending[0]["requested_details"]["content"])
         approval = pending[0]
         decision = client.post(
             "/api/v1/workspaces/"+workspace["id"]+"/agent/tasks/"+task_id+
