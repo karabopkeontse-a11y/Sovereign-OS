@@ -107,7 +107,8 @@ def execute_workspace_tool(tool_name: str, arguments: dict, root: Path) -> dict:
         target = _inside_root(root, args["path"])
         if not target.is_file():
             raise FileNotFoundError("The requested file does not exist in this agent workspace.")
-        data = target.read_bytes()
+        with target.open("rb") as handle:
+            data = handle.read(MAX_TEXT_BYTES + 1)
         if len(data) > MAX_TEXT_BYTES:
             raise ValueError("The requested file is larger than the 1 MB read limit.")
         try:
