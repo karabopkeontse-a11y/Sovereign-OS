@@ -789,10 +789,18 @@ def create_app(db_path=None, router=None, token=None):
             raise HTTPException(409, "No registered tool step is ready. Review pending approvals or add a supported tool step.")
         if selected.permission_level != "read_only" and selected.status != "approved":
             raise HTTPException(403, "This tool step requires explicit approval before execution.")
+        started_at = None
+        started_clock = None
+        run_recorded = False
+        arguments = {}
+        input_summary = "{}"
         try:
             arguments = json.loads(spec["input_json"])
+            input_summary = json.dumps({
+                key: (f"[{len(value)} characters]" if key == "content" and isinstance(value, str) else value)
+                for key, value in arguments.items()
+            }, ensure_ascii=False)
             root = workspace_root(state.db_path, workspace.id)
-            # workspace_root resolves its agent folder relative to the supplied database path.
             if problem.status in {"planned", "awaiting_approval"}:
                 tasks.set_problem_status(problem.id, "running")
             tasks.update_step_status(selected.id, "running")
@@ -804,15 +812,14 @@ def create_app(db_path=None, router=None, token=None):
             )
             tasks.update_step_status(selected.id, "verifying")
             tasks.record_tool_run(
-                selected.id, spec["tool_name"],
-                json.dumps({key: (f"[{len(value)} characters]" if key == "content" and isinstance(value, str) else value)
-                            for key, value in arguments.items()}, ensure_ascii=False),
+                selected.id, spec["tool_name"], input_summary,
                 (f"Listed {result.get('count')} workspace files" if spec["tool_name"] == "workspace.list_files"
                  else f"Read {result.get('path')} ({result.get('bytes')} bytes)" if spec["tool_name"] == "workspace.read_file"
                  else f"Created {result.get('path')} ({result.get('bytes')} bytes)"),
                 "success" if passed else "verification_failed",
                 started_at, now(),
             )
+            run_recorded = True
             tasks.record_verification(
                 selected.id, spec["verification_criterion"] or criterion,
                 "server-side workspace boundary and read-back check",
@@ -837,6 +844,14 @@ def create_app(db_path=None, router=None, token=None):
         except HTTPException:
             raise
         except Exception as exc:
+            if started_at and not run_recorded:
+                try:
+                    tasks.record_tool_run(
+                        selected.id, spec["tool_name"], input_summary,
+                        "Tool failed: " + type(exc).__name__, "failed", started_at, now()
+                    )
+                except Exception:
+                    pass
             current_step = tasks.get_step(selected.id)
             if current_step and current_step.status in {"running", "verifying"}:
                 try:
