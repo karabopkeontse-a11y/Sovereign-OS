@@ -918,9 +918,11 @@ def create_app(db_path=None, router=None, token=None):
             sql = ("SELECT s.id AS step_id, s.step_number, s.action, s.permission_level, "
                    "s.status AS step_status, p.id AS problem_id, p.title AS task_title, "
                    "p.description AS task_description, p.status AS task_status, "
-                   "p.workspace_id, w.name AS workspace_name "
+                   "p.workspace_id, w.name AS workspace_name, sp.tool_name, sp.input_json "
                    "FROM plan_steps s JOIN problems p ON p.id=s.problem_id "
-                   "JOIN workspaces w ON w.id=p.workspace_id WHERE s.status='awaiting_approval'")
+                   "JOIN workspaces w ON w.id=p.workspace_id "
+                   "LEFT JOIN agent_step_specs sp ON sp.step_id=s.id "
+                   "WHERE s.status='awaiting_approval'")
             params = []
             if workspace_id:
                 try:
@@ -931,7 +933,24 @@ def create_app(db_path=None, router=None, token=None):
                 params.append(workspace_id)
             sql += " ORDER BY p.created_at, s.step_number"
             rows = db.execute(sql, params).fetchall()
-            return {"approvals": [dict(row) for row in rows],
+            items = []
+            for row in rows:
+                item = dict(row)
+                raw_arguments = item.pop("input_json", None)
+                details = {}
+                if raw_arguments:
+                    try:
+                        arguments = json.loads(raw_arguments)
+                    except (TypeError, ValueError):
+                        arguments = {}
+                    if item.get("tool_name") == "workspace.create_note":
+                        details = {"filename": arguments.get("filename", ""),
+                                   "content": arguments.get("content", "")}
+                    elif item.get("tool_name") == "workspace.read_file":
+                        details = {"path": arguments.get("path", "")}
+                item["requested_details"] = details
+                items.append(item)
+            return {"approvals": items,
                     "note": "Approval decisions are persisted. Approval does not itself execute an action."}
         finally:
             db.close()
