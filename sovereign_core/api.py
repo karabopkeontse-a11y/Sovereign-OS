@@ -53,6 +53,7 @@ class GroupChatInput(BaseModel):
 
 class AgentPlanInput(BaseModel):
     goal: str = Field(min_length=10, max_length=4000)
+    allow_cloud_processing: bool = False
 
 
 class AgentDecisionInput(BaseModel):
@@ -641,6 +642,16 @@ def create_app(db_path=None, router=None, token=None):
                         409,
                         "Agent planning is paused: configure an explicitly named non-Qwen model first. Qwen remains offline."
                     )
+                if not payload.allow_cloud_processing:
+                    candidate_indices = [
+                        index for index in candidate_indices
+                        if planner_router.candidates[index].info.runtime == "local"
+                    ]
+                    if not candidate_indices:
+                        raise HTTPException(
+                            403,
+                            "No local non-Qwen planner is available. Explicit cloud-processing consent is required before a cloud model can receive this goal."
+                        )
             response, info, used_index = planner_router.invoke(
                 [SystemMessage(content=planning_prompt),
                  HumanMessage(content="Workspace: " + workspace.name + "\nGoal: " + payload.goal)],
