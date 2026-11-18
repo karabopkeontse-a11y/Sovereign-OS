@@ -21,8 +21,16 @@ TOOLS = {
 def workspace_root(db_path: str | Path, workspace_id: str) -> Path:
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", workspace_id or ""):
         raise ValueError("Invalid workspace identifier.")
-    base = (Path(db_path).resolve().parent / "agent_workspace").resolve()
-    root = (base / workspace_id).resolve()
+    parent = Path(db_path).resolve().parent
+    base_candidate = parent / "agent_workspace"
+    base_candidate.mkdir(parents=True, exist_ok=True)
+    base = base_candidate.resolve()
+    if base_candidate.is_symlink() or base.parent != parent:
+        raise ValueError("The agent workspace root must be a real folder beside the database.")
+    root_candidate = base / workspace_id
+    if root_candidate.exists() and root_candidate.is_symlink():
+        raise ValueError("Workspace agent folders cannot be symbolic links.")
+    root = root_candidate.resolve()
     if root.parent != base:
         raise ValueError("Workspace agent folder escaped its approved root.")
     root.mkdir(parents=True, exist_ok=True)
@@ -99,14 +107,14 @@ def execute_workspace_tool(tool_name: str, arguments: dict, root: Path) -> dict:
         target = _inside_root(root, args["path"])
         if not target.is_file():
             raise FileNotFoundError("The requested file does not exist in this agent workspace.")
-        size = target.stat().st_size
-        if size > MAX_TEXT_BYTES:
+        data = target.read_bytes()
+        if len(data) > MAX_TEXT_BYTES:
             raise ValueError("The requested file is larger than the 1 MB read limit.")
         try:
-            text = target.read_text(encoding="utf-8")
+            text = data.decode("utf-8")
         except UnicodeDecodeError as exc:
             raise ValueError("The requested file is not valid UTF-8 text.") from exc
-        return {"tool": tool_name, "path": args["path"], "content": text, "bytes": size}
+        return {"tool": tool_name, "path": args["path"], "content": text, "bytes": len(data)}
     if tool_name == "workspace.create_note":
         target = _inside_root(root, args["filename"])
         target.parent.mkdir(parents=True, exist_ok=True)
