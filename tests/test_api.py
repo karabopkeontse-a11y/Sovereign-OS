@@ -123,6 +123,24 @@ class SovereignAPITests(unittest.TestCase):
         )
         self.assertEqual(result.status_code, 401)
 
+    def test_voice_transcription_cloud_consent_header_passes_cors_preflight(self):
+        result = self.client.options(
+            "/api/v1/voice/transcribe",
+            headers={
+                "Origin": "http://localhost:8080",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": (
+                    "authorization,content-type,x-sovereign-language,"
+                    "x-sovereign-cloud-consent"
+                ),
+            },
+        )
+        self.assertEqual(result.status_code, 200)
+        self.assertIn(
+            "x-sovereign-cloud-consent",
+            result.headers.get("access-control-allow-headers", "").lower(),
+        )
+
     def test_voice_transcription_requires_explicit_cloud_consent(self):
         result = self.client.post(
             "/api/v1/voice/transcribe",
