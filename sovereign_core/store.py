@@ -139,7 +139,7 @@ class TaskStore:
             "diagnosing": {"planned", "blocked", "failed", "cancelled"},
             "planned": {"awaiting_approval", "running", "blocked", "cancelled"},
             "awaiting_approval": {"planned", "running", "blocked", "cancelled"},
-            "running": {"verifying", "blocked", "failed", "cancelled"},
+            "running": {"verifying", "awaiting_approval", "blocked", "failed", "cancelled"},
             "verifying": {"running", "completed", "blocked", "failed", "cancelled"},
             "blocked": {"diagnosing", "planned", "cancelled"},
             "failed": {"diagnosing", "cancelled"},
