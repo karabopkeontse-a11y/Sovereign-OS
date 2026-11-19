@@ -120,7 +120,7 @@ class ModelRouterTests(unittest.TestCase):
             candidate("Provider B", "safe-model", "approved candidate"),
             candidate("Provider C", "other-model", "must not run either"),
         ]
-        result, info, index = router.invoke([], candidate_indices=[1])
+        result, info, index = router.invoke([], tools=[], candidate_indices=[1])
         self.assertEqual(result, "approved candidate")
         self.assertEqual(info.model, "safe-model")
         self.assertEqual(index, 1)
