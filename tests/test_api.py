@@ -270,11 +270,14 @@ class SovereignAPITests(unittest.TestCase):
                               json={"goal":"Create and verify a local Markdown draft in this workspace."})
         self.assertEqual(created.status_code, 200, created.text)
         task_id = created.json()["task"]["id"]
-        first = client.post("/api/v1/workspaces/"+workspace["id"]+"/agent/tasks/"+task_id+"/execute-next",
+        first = client.post("/api/v1/workspaces/"+workspace["id"]+"/agent/tasks/"+task_id+"/run-safe",
                             headers=self.headers, json={})
         self.assertEqual(first.status_code, 200, first.text)
+        self.assertEqual(first.json()["executed_count"], 1)
         self.assertTrue(first.json()["verified"])
-        self.assertEqual(first.json()["tool_result"]["tool"], "workspace.list_files")
+        self.assertTrue(first.json()["stopped_at_approval"])
+        self.assertEqual(first.json()["task_status"], "awaiting_approval")
+        self.assertEqual(first.json()["results"][0]["tool_result"]["tool"], "workspace.list_files")
         blocked = client.post("/api/v1/workspaces/"+workspace["id"]+"/agent/tasks/"+task_id+"/execute-next",
                               headers=self.headers, json={})
         self.assertEqual(blocked.status_code, 409)
