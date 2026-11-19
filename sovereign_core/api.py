@@ -186,10 +186,10 @@ class SovereignAPI:
             try:
                 workspace = self.workspaces.get_workspace(workspace_id)
             except ValueError:
-                yield "event: error\\ndata: " + json.dumps({"message": "Workspace not found"}) + "\\n\\n"
+                yield "event: error\ndata: " + json.dumps({"message": "Workspace not found"}) + "\n\n"
                 return
             if payload.images:
-                yield "event: error\\ndata: " + json.dumps({"message": "Image attachments are not supported by streaming yet."}) + "\\n\\n"
+                yield "event: error\ndata: " + json.dumps({"message": "Image attachments are not supported by streaming yet."}) + "\n\n"
                 return
 
             db = self.connection()
@@ -201,7 +201,7 @@ class SovereignAPI:
                         (conversation_id, workspace.id),
                     ).fetchone()
                     if owner is None:
-                        yield "event: error\\ndata: " + json.dumps({"message": "Conversation not found in this workspace"}) + "\\n\\n"
+                        yield "event: error\ndata: " + json.dumps({"message": "Conversation not found in this workspace"}) + "\n\n"
                         return
                 else:
                     conversation_id = str(uuid4())
@@ -221,7 +221,7 @@ class SovereignAPI:
                 memories = self.workspaces.search(
                     workspace.id, payload.message, limit=2 if payload.voice_mode else 5
                 )
-                memory_context = "\\n".join("- " + item.content for item in memories)
+                memory_context = "\n".join("- " + item.content for item in memories)
                 assistant_name = (
                     "Thothi, the customer-facing SmartFlow BW assistant powered by SovereignOS"
                     if workspace.name == "SmartFlow BW" else "SovereignOS"
@@ -230,7 +230,7 @@ class SovereignAPI:
                     "You are " + assistant_name + " in the " + workspace.name + " workspace. Purpose: "
                     + workspace.purpose + ". Use only this workspace context. Never claim to execute "
                     "external actions. Financial, publishing, destructive and physical-device actions "
-                    "require human approval. Relevant memories:\\n" + (memory_context or "(none)")
+                    "require human approval. Relevant memories:\n" + (memory_context or "(none)")
                 )
                 if payload.voice_mode:
                     system += (
@@ -252,9 +252,9 @@ class SovereignAPI:
                 reply_parts = []
                 info = None
                 used_index = None
-                yield "event: start\\ndata: " + json.dumps({
+                yield "event: start\ndata: " + json.dumps({
                     "conversation_id": conversation_id, "workspace_id": workspace.id
-                }) + "\\n\\n"
+                }) + "\n\n"
 
                 def text_from_chunk(chunk):
                     value = getattr(chunk, "content", chunk)
@@ -276,9 +276,9 @@ class SovereignAPI:
                     if not delta:
                         continue
                     reply_parts.append(delta)
-                    yield "event: delta\\ndata: " + json.dumps(
+                    yield "event: delta\ndata: " + json.dumps(
                         {"text": delta}, ensure_ascii=False
-                    ) + "\\n\\n"
+                    ) + "\n\n"
 
                 reply = "".join(reply_parts)
                 if info is None or not reply:
@@ -299,7 +299,7 @@ class SovereignAPI:
                     db.close()
                 health = router.health_snapshot() if hasattr(router, "health_snapshot") else []
                 selected = next((item.get("model") for item in health if item.get("active")), None)
-                yield "event: done\\ndata: " + json.dumps({
+                yield "event: done\ndata: " + json.dumps({
                     "conversation_id": conversation_id,
                     "workspace_id": workspace.id,
                     "provider": info.provider,
@@ -308,13 +308,13 @@ class SovereignAPI:
                     "fallback_used": used_index != getattr(router, "active_index", used_index),
                     "selected_model": selected,
                     "model_latency_ms": latency_ms,
-                }) + "\\n\\n"
+                }) + "\n\n"
             except GeneratorExit:
                 raise
             except Exception as exc:
-                yield "event: error\\ndata: " + json.dumps({
+                yield "event: error\ndata: " + json.dumps({
                     "message": "Model stream failed: " + type(exc).__name__ + ": " + str(exc)
-                }) + "\\n\\n"
+                }) + "\n\n"
 
         return events()
 
