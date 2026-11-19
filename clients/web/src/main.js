@@ -29,7 +29,7 @@ let audioContext=null;
 
 let activeAudio=null,activeAudioUrl=null,voiceRequestController=null,activeUtterance=null,lastSpokenText="";
 
-let liveRecognition=null,liveInterimText="",liveFinalizing=false;
+let liveRecognition=null,liveInterimText="",liveFinalizing=false,voiceCloudConsentSession=0;
 
 function stopStreamingRecognition(){
  const recognition=liveRecognition;
@@ -589,7 +589,8 @@ async function transcribeVoiceBlob(blob,session){
    headers:{
     "Content-Type":mediaType,
     "Authorization":"Bearer "+token,
-    "X-Sovereign-Language":prefs.voiceLanguage||"en-GB"
+    "X-Sovereign-Language":prefs.voiceLanguage||"en-GB",
+    "X-Sovereign-Cloud-Consent":voiceCloudConsentSession===session?"explicit-session":""
    },
    body:blob,
    signal:AbortSignal.any([controller.signal,AbortSignal.timeout(25000)])
@@ -709,7 +710,6 @@ async function startBatchRecognition(session){
   micChunks=[];
   micRecorder=null;
 
-  const micPreRoll=[];
   let lastMeterUpdate=0;
 
   const mimeType=MediaRecorder.isTypeSupported("audio/webm;codecs=opus")?"audio/webm;codecs=opus":
@@ -718,14 +718,8 @@ async function startBatchRecognition(session){
   micRecorder=mimeType?new MediaRecorder(stream,{mimeType}):new MediaRecorder(stream);
 
   micRecorder.ondataavailable=event=>{
-   if(!event.data?.size||micDiscard)return;
-   if(micSpeechStartedAt){
-    micChunks.push(event.data);
-   }else{
-    micPreRoll.push(event.data);
-    // Keep the initial WebM header and the two most recent audio segments.
-    if(micPreRoll.length>3)micPreRoll.splice(1,1);
-   }
+   // Preserve every timeslice in order; dropping WebM chunks can corrupt the recording.
+   if(event.data?.size&&!micDiscard)micChunks.push(event.data);
   };
 
   micRecorder.onerror=()=>{
@@ -778,7 +772,7 @@ async function startBatchRecognition(session){
    const rms=Math.sqrt(sum/samples.length);
    const now=performance.now();
    const calibrating=now-micCalibrationStartedAt<500;
-   const threshold=Math.max(0.0035,micNoiseFloor*2.0);
+   const threshold=Math.max(0.0018,micNoiseFloor*2.0);
 
    // Show measured input level so a silent browser input is immediately visible.
    if(now-lastMeterUpdate>=250){
@@ -792,18 +786,17 @@ async function startBatchRecognition(session){
      if(rms>threshold)micAboveCount++;
      else{
       micAboveCount=0;
-      micNoiseFloor=Math.min(0.025,micNoiseFloor*0.96+rms*0.04);
+      micNoiseFloor=Math.min(0.01,micNoiseFloor*0.96+rms*0.04);
      }
-     if(micAboveCount>=2){
+     if(micAboveCount>=3){
       micSpeechStartedAt=now;
       micLastVoiceAt=now;
-      micChunks.push(...micPreRoll);
-      micPreRoll.length=0;
+
      }
     }
    }else{
     if(rms>threshold)micLastVoiceAt=now;
-    if(now-micLastVoiceAt>=1100||now-micSpeechStartedAt>=18000)finishUtterance();
+    if(now-micLastVoiceAt>=850||now-micSpeechStartedAt>=18000)finishUtterance();
    }
 
    if(!micFinalizing)micFrame=requestAnimationFrame(inspectLevel);
@@ -843,7 +836,7 @@ function listenAgain(delay=350){
  },Math.max(0,delay));
 }
 
-function startCall(){
+async function startCall(){
  if(!voiceCapabilities?.available||(!window.speechSynthesis&&!voiceCapabilities?.speech_output_available)){
   notice(voiceCapabilities?.reason||"Voice services are still being checked. Reconnect the local API and try again.","warning");
   return;
@@ -862,7 +855,14 @@ function startCall(){
   return;
  }
  if(callActive)return;
+ const approved=await inAppConfirm({
+  title:"Allow cloud speech recognition for this call?",
+  message:"SovereignOS will send the microphone audio you speak during this call to Google's speech-recognition service to convert it to text. SovereignOS does not save the raw recording. If you decline, the microphone will not start. Cloud recognition is not a local/offline service.",
+  confirmLabel:"Allow for this call"
+ });
+ if(!approved)return;
  callSession++;
+ voiceCloudConsentSession=callSession;
  clearListenTimer();
  stopMicrophone(true);
  stopVoicePlayback();
