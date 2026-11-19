@@ -1,5 +1,6 @@
 ﻿"""REST API authentication, workspace isolation and IoT safety tests."""
 import tempfile
+import json
 import unittest
 from pathlib import Path
 try:
