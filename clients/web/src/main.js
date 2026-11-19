@@ -364,7 +364,7 @@ async function sendMessage(msg,{voice=false,voiceSession=callSession,images=[],o
   else if(eventName==="delta"){
    const delta=String(data.text||"");if(!delta)return;fullReply+=delta;if(onDelta)onDelta(delta,fullReply);
    if(transcriptBody){transcriptBody.textContent=fullReply;el("call-transcript").scrollTop=el("call-transcript").scrollHeight;}
-   if(speech){speechBuffer+=speechText(delta);const split=takeSpeechPhrases(speechBuffer);speechBuffer=split.rest;split.phrases.forEach(phrase=>speech.enqueue(phrase));}
+   if(speech){speechBuffer+=delta;const split=takeSpeechPhrases(speechBuffer);speechBuffer=split.rest;split.phrases.map(speechText).filter(Boolean).forEach(phrase=>speech.enqueue(phrase));}
   }else if(eventName==="done")done=data;else if(eventName==="error")throw new Error(data.message||"The streamed response failed.");
  };
  try{
@@ -376,7 +376,7 @@ async function sendMessage(msg,{voice=false,voiceSession=callSession,images=[],o
   el("model-badge").textContent=done.provider+" · "+done.model+" · "+(done.runtime==="local"?"LOCAL":"CLOUD");
   el("model-badge").title="First streamed text: "+Math.round(startedAt-requestStarted)+" ms · Model completion: "+modelMs+" ms · Total: "+requestMs+" ms";
   if(done.fallback_used)notice("Model availability notice: Sovereign used your configured fallback order and selected "+done.provider+" · "+done.model+".","warning");
-  if(voice){if(speech){const finalSplit=takeSpeechPhrases(speechBuffer,true);finalSplit.phrases.forEach(phrase=>speech.enqueue(phrase));speech.finish();}else if(callActive&&voiceSession===callSession)speak(fullReply,voiceSession);else voiceBusy=false;}else setCoreState("idle");
+  if(voice){if(speech){const finalSplit=takeSpeechPhrases(speechBuffer,true);finalSplit.phrases.map(speechText).filter(Boolean).forEach(phrase=>speech.enqueue(phrase));speech.finish();}else if(callActive&&voiceSession===callSession)speak(fullReply,voiceSession);else voiceBusy=false;}else setCoreState("idle");
   return fullReply;
  }catch(error){if(speech)speech.stop();if(voice){voiceBusy=false;if(callActive&&voiceSession===callSession)listenAgain(500);}setCoreState("error");throw error;}
 }
