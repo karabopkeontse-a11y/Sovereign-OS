@@ -2,11 +2,9 @@ name: SovereignOS platform validation
 
 on:
   push:
-    branches:
-      - feature/sovereign-2030-actualization
+    branches: ["**"]
   pull_request:
-    branches:
-      - feature/2030-intelligence-experience
+    branches: ["**"]
 
 permissions:
   contents: read
