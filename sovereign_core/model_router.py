@@ -413,11 +413,11 @@ class ModelRouter:
                     raise
                 failures.append(f"{candidate.info.label}: {type(exc).__name__}: {exc}")
                 self._record_failure(candidate, exc)
-        detail = "\\n".join(failures[-10:])
+        detail = "\n".join(failures[-10:])
         raise ModelRoutingError(
             "All configured model options are currently unavailable, cooling down, "
             "or out of quota. Sovereign did not make a paid request. "
-            "Paid providers remain disabled unless explicitly opted in.\\nProvider details:\\n" + detail,
+            "Paid providers remain disabled unless explicitly opted in.\nProvider details:\n" + detail,
             failures=failures, checkout_url=self.checkout_url,
         )
 
