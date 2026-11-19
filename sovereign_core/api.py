@@ -388,7 +388,7 @@ def create_app(db_path=None, router=None, token=None):
     origins = [x.strip() for x in os.getenv("SOVEREIGN_API_CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173,http://localhost:8080,http://127.0.0.1:8080").split(",") if x.strip()]
     if origins:
         app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=False,
-                           allow_methods=["GET", "POST"], allow_headers=["Authorization", "Content-Type", "X-Sovereign-Language"])
+                           allow_methods=["GET", "POST"], allow_headers=["Authorization", "Content-Type", "X-Sovereign-Language", "X-Sovereign-Cloud-Consent"])
     def authorize(authorization: str | None = Header(default=None)):
         if not expected_token:
             raise HTTPException(503, "API locked: configure SOVEREIGN_API_TOKEN")
