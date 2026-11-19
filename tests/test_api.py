@@ -19,6 +19,16 @@ class FakeRouter:
         if provider != "Test" or model != "fake":
             raise ValueError("That model is not configured")
         return {"provider": provider, "model": model, "runtime": "cloud", "active": True}
+    def stream(self, messages, **kwargs):
+        class Chunk:
+            def __init__(self, content):
+                self.content = content
+        class Info:
+            provider = "Test"
+            model = "fake"
+            runtime = "cloud"
+        yield Chunk("First "), Info(), 0
+        yield Chunk("streamed answer."), Info(), 0
     def invoke(self, messages, **kwargs):
         class Reply:
             content = "Test response"
@@ -168,6 +178,42 @@ class SovereignAPITests(unittest.TestCase):
         self.assertEqual(own.status_code,200)
         self.assertEqual(len(own.json()["messages"]),2)
         self.assertEqual(other.status_code,404)
+    def test_chat_stream_requires_auth(self):
+        result = self.client.post(
+            "/api/v1/workspaces/test-workspace/chat/stream",
+            json={"message": "hello"},
+        )
+        self.assertEqual(result.status_code, 401)
+
+    def test_chat_stream_emits_deltas_and_persists_completed_turn(self):
+        workspaces = self.client.get("/api/v1/workspaces", headers=self.headers).json()["workspaces"]
+        workspace = next(item for item in workspaces if item["name"] == "SovereignOS")
+        result = self.client.post(
+            f"/api/v1/workspaces/{workspace['id']}/chat/stream",
+            headers=self.headers,
+            json={"message": "Give me a streamed answer", "voice_mode": True},
+        )
+        self.assertEqual(result.status_code, 200)
+        self.assertIn("event: start", result.text)
+        self.assertIn('event: delta', result.text)
+        self.assertIn('"text": "First "', result.text)
+        self.assertIn('"text": "streamed answer."', result.text)
+        self.assertIn("event: done", result.text)
+        self.assertNotIn("event: error", result.text)
+        events = [
+            json.loads(line.removeprefix("data: "))
+            for line in result.text.splitlines()
+            if line.startswith("data: ")
+        ]
+        conversation_id = next(item["conversation_id"] for item in events if "conversation_id" in item)
+        history = self.client.get(
+            f"/api/v1/workspaces/{workspace['id']}/conversations/{conversation_id}/messages",
+            headers=self.headers,
+        )
+        self.assertEqual(history.status_code, 200)
+        messages = history.json()["messages"]
+        self.assertEqual([item["role"] for item in messages], ["user", "assistant"])
+        self.assertEqual(messages[-1]["content"], "First streamed answer.")
     def test_model_health_comes_from_router(self):
         data=self.client.get("/api/v1/models/health",headers=self.headers).json()
         self.assertEqual(data["providers"][0]["provider"],"Test")
