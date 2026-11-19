@@ -284,10 +284,10 @@ async function createAgentPlan(){
  if(goal.length<10){feedback.textContent="Describe the goal in at least 10 characters.";return;}
  if(!apiConnected||!active){feedback.textContent="Connect the local API and choose a workspace first.";return;}
  if(!routerData?.providers?.length){feedback.textContent="No model is configured. Check Model health first.";return;}
- const eligibleCloud=(routerData.providers||[]).filter(p=>p.runtime==="cloud"&&!/qwen|openrouter\/free|\bauto\b/i.test(p.model||""));
+ const eligibleCloud=(routerData.providers||[]).filter(p=>p.runtime==="cloud");
  const approvalKey=active+"|agent-planner|"+eligibleCloud.map(p=>p.provider+"|"+p.model).sort().join(";");
  if(eligibleCloud.length&&cloudSessionApproval!==approvalKey){
-  if(!await inAppConfirm({title:"External AI planning",message:"Your goal and workspace name will be sent to these configured cloud models for planning: "+eligibleCloud.map(p=>p.provider+" · "+p.model).join(", ")+". The planner excludes Qwen and dynamic model aliases. Do not include passwords, identity documents, financial records or confidential material. Allow cloud planning for this workspace session?",confirmLabel:"Allow cloud planning"}))return;
+  if(!await inAppConfirm({title:"External AI planning",message:"Your goal and workspace name may be sent to these configured cloud models for planning: "+eligibleCloud.map(p=>p.provider+" · "+p.model).join(", ")+". This includes every provider in your configured model order. Do not include passwords, identity documents, financial records or confidential material. Allow cloud planning for this workspace session?",confirmLabel:"Allow cloud planning"}))return;
   cloudSessionApproval=approvalKey;
  }
  setBusy(button,true,"Planning…");feedback.textContent="Sovereign is structuring the goal into a workspace-specific plan. Nothing is being executed.";
