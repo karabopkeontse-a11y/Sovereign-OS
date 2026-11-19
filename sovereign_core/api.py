@@ -890,17 +890,20 @@ def create_app(db_path=None, router=None, token=None):
             raise HTTPException(409, "This task is not in an executable state.")
 
         results = []
-        stop_reason = "No further registered tool steps are ready."
+        stop_reason = "No further plan steps are ready."
         stopped_at_approval = False
         for _ in range(8):
-            next_step = None
-            for candidate in tasks.list_steps(problem.id):
-                if candidate.status in {"verified", "cancelled", "failed", "blocked"}:
-                    continue
-                if tasks.get_step_spec(candidate.id):
-                    next_step = candidate
-                    break
+            # Preserve the planner's exact step order. A pending step without a
+            # registered tool is a hard sequencing boundary, not permission to
+            # skip ahead and execute a later step.
+            next_step = next((
+                candidate for candidate in tasks.list_steps(problem.id)
+                if candidate.status not in {"verified", "cancelled", "failed", "blocked"}
+            ), None)
             if next_step is None:
+                break
+            if not tasks.get_step_spec(next_step.id):
+                stop_reason = "Paused because the next plan step has no registered tool."
                 break
             if next_step.status == "awaiting_approval" or (
                 next_step.permission_level != "read_only" and next_step.status != "approved"
