@@ -499,6 +499,12 @@ def create_app(db_path=None, router=None, token=None):
         if media_type not in allowed_types:
             raise HTTPException(415, "Unsupported audio format.")
 
+        if request.headers.get("x-sovereign-cloud-consent") != "explicit-session":
+            raise HTTPException(
+                403,
+                "Cloud speech recognition requires explicit approval in the SovereignOS call screen.",
+            )
+
         declared_length = request.headers.get("content-length")
         if declared_length:
             try:
