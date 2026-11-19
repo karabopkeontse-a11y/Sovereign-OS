@@ -238,7 +238,7 @@ async function loadAgentTasks(){
     return step&&(step.status==="approved"||(step.status==="planned"&&step.permission_level==="read_only"));
    });
    if(runnable&&!["blocked","failed","completed","cancelled"].includes(entry.task.status)){
-    const run=document.createElement("button");run.type="button";run.className="primary";run.textContent="Run next eligible tool step ↗";
+    const run=document.createElement("button");run.type="button";run.className="primary";run.textContent="Run safe steps ↗";
     run.onclick=()=>runAgentStep(entry.task.id,run);card.append(run);
    }
    if(!["completed","cancelled"].includes(entry.task.status)){
@@ -251,19 +251,22 @@ async function loadAgentTasks(){
 }
 async function runAgentStep(taskId,button){
  const feedback=el("agent-plan-feedback"),output=el("agent-tool-result");
- setBusy(button,true,"Executing safely…");
+ setBusy(button,true,"Running safe steps…");
  try{
-  const result=await api("/api/v1/workspaces/"+encodeURIComponent(active)+"/agent/tasks/"+encodeURIComponent(taskId)+"/execute-next",{method:"POST",body:JSON.stringify({}),timeoutMs:30000});
-  const tool=result.tool_result||{};
-  let summary="Tool step verified.";
-  if(tool.tool==="workspace.list_files")summary="Listed "+tool.count+" files in this workspace agent folder.";
-  else if(tool.tool==="workspace.read_file")summary="Read "+tool.path+" ("+tool.bytes+" bytes).";
-  else if(tool.tool==="workspace.create_note")summary="Created "+tool.path+" ("+tool.bytes+" bytes).";
-  feedback.textContent=summary+" Duration: "+result.duration_ms+" ms. Task status: "+result.task_status.replaceAll("_"," ")+".";
-  output.textContent=typeof tool.content==="string"?tool.content:JSON.stringify(tool,null,2);
+  const result=await api("/api/v1/workspaces/"+encodeURIComponent(active)+"/agent/tasks/"+encodeURIComponent(taskId)+"/run-safe",{method:"POST",body:JSON.stringify({}),timeoutMs:60000});
+  const results=result.results||[];
+  const summaries=results.map(item=>{
+   const tool=item.tool_result||{};
+   if(tool.tool==="workspace.list_files")return "Listed "+tool.count+" files";
+   if(tool.tool==="workspace.read_file")return "Read "+tool.path+" ("+tool.bytes+" bytes)";
+   if(tool.tool==="workspace.create_note")return "Created "+tool.path+" ("+tool.bytes+" bytes)";
+   return tool.tool||"Tool step";
+  });
+  feedback.textContent=result.executed_count+" safe step(s) executed and verified. "+result.stop_reason+" Task status: "+result.task_status.replaceAll("_"," ")+". ";
+  output.textContent=results.length?results.map((item,index)=>"STEP "+(index+1)+" · "+(summaries[index]||"Verified")+"\n"+JSON.stringify(item.tool_result||{},null,2)).join("\n\n"):"No safe tool steps were ready."; 
   output.classList.remove("hidden");
   await loadAgentTasks();await approvals();
-  notice("Agent tool completed and passed its verification check.");
+  notice(result.stopped_at_approval?"Safe steps verified. The next consequential action is waiting in Approvals.":"Agent safe-step batch completed.");
  }catch(error){
   feedback.textContent="Agent execution stopped: "+error.message;
   notice("Agent tool could not complete: "+error.message,"error");
