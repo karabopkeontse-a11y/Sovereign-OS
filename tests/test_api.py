@@ -123,6 +123,15 @@ class SovereignAPITests(unittest.TestCase):
         )
         self.assertEqual(result.status_code, 401)
 
+    def test_voice_transcription_requires_explicit_cloud_consent(self):
+        result = self.client.post(
+            "/api/v1/voice/transcribe",
+            content=b"audio",
+            headers={**self.headers, "Content-Type": "audio/webm"},
+        )
+        self.assertEqual(result.status_code, 403)
+        self.assertIn("explicit approval", result.json()["detail"])
+
     def test_voice_transcription_rejects_unsupported_media_type(self):
         result = self.client.post(
             "/api/v1/voice/transcribe",
@@ -135,7 +144,8 @@ class SovereignAPITests(unittest.TestCase):
         result = self.client.post(
             "/api/v1/voice/transcribe",
             content=b"",
-            headers={**self.headers, "Content-Type": "audio/webm"},
+            headers={**self.headers, "Content-Type": "audio/webm",
+                     "X-Sovereign-Cloud-Consent": "explicit-session"},
         )
         self.assertEqual(result.status_code, 422)
 
