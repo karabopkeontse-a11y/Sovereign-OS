@@ -30,3 +30,13 @@ test("live voice transcript returns its element for incremental updates",async()
  assert.match(js,/function appendTranscript\(who,text\)[^\n]*return item;/);
  assert.match(js,/const transcript=appendTranscript\("SOVEREIGN",""\);transcriptBody=transcript\.querySelector\("p"\)/);
 });
+
+
+test("voice capture preserves ordered MediaRecorder chunks and asks for cloud consent",async()=>{
+ const js=await readFile(new URL("src/main.js",root),"utf8");
+ assert.match(js,/micChunks\\.push\\(event\\.data\\)/);
+ assert.doesNotMatch(js,/micPreRoll\\.splice/);
+ assert.match(js,/Allow cloud speech recognition for this call/);
+ assert.match(js,/X-Sovereign-Cloud-Consent/);
+ assert.match(js,/NO SPEECH DETECTED/);
+});
