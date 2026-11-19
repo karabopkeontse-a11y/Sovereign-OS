@@ -306,7 +306,80 @@ async function createAgentPlan(){
 function cleanAssistantText(value){return String(value??"").replace(/\r\n?/g,"\n").replace(/\u00a0/g," ").replace(/^[\x60]{3}[\w-]*\s*$/gm,"").replace(/!\[([^\]]*)\]\([^)]+\)/g,"$1").replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g,"$1 ($2)").replace(/[\x60]([^\x60]+)[\x60]/g,"$1").replace(/^\s{0,3}#{1,6}\s+/gm,"").replace(/^\s*>\s?/gm,"").replace(/^\s*[-*+]\s+/gm,"• ").replace(/^\s*[-*_]{3,}\s*$/gm,"").replace(/\*\*(.*?)\*\*/g,"$1").replace(/__(.*?)__/g,"$1").replace(/(?<!\w)\*(.*?)\*(?!\w)/g,"$1").replace(/(?<!\w)_(.*?)_(?!\w)/g,"$1").replace(/[ \t]+\n/g,"\n").replace(/\n{3,}/g,"\n\n").trim();}
 function speechText(value){let text=cleanAssistantText(value);const urls=[];text=text.replace(/\b(?:https?:\/\/|www\.)[^\s<>]+/gi,match=>{const url=match.replace(/[),.;!?]+$/,"");urls.push(url);return " URLTOKEN"+(urls.length-1)+" ";});text=text.replace(/[#*_~>|{}\[\]]/g," ").replace(/[•▪◦]/g," ").replace(/\s*[-–—]{2,}\s*/g,". ").replace(/\s+/g," ").trim();return text.replace(/URLTOKEN(\d+)/g,(_,index)=>urls[Number(index)]||"");}
 function addBubble(role,text,images=[]){const box=el("messages");const welcome=box.querySelector(".chat-welcome");if(welcome)welcome.remove();if(box.childNodes.length===1&&box.firstChild.nodeType===3&&/No conversations|Connect the API/.test(box.textContent))box.replaceChildren();const b=document.createElement("div");b.className="bubble "+(role==="user"?"user":"assistant");if(role==="assistant"){const source=String(text??"");const pattern=/!\[([^\]]*)\]\((https?:\/\/[^\s)]+)\)/g;let cursor=0,match;while((match=pattern.exec(source))){const before=source.slice(cursor,match.index);if(before.trim()){const p=document.createElement("p");p.textContent=cleanAssistantText(before);b.append(p);}const img=document.createElement("img");img.className="assistant-image";img.src=match[2];img.alt=match[1]||"Sovereign illustration";img.loading="lazy";img.referrerPolicy="no-referrer";b.append(img);cursor=pattern.lastIndex;}const tail=source.slice(cursor);if(tail.trim()){const p=document.createElement("p");p.textContent=cleanAssistantText(tail);b.append(p);}if(!b.childNodes.length)b.textContent=cleanAssistantText(source);}else{b.textContent=text;images.forEach(src=>{const img=document.createElement("img");img.className="assistant-image";img.src=src;img.alt="User attached image";img.loading="lazy";b.append(img);});}box.append(b);box.scrollTop=box.scrollHeight;return b;}
-async function sendMessage(msg,{voice=false,voiceSession=callSession,images=[]}={}){if(!active)throw Error("Choose a workspace first.");setCoreState("thinking");const requestStarted=performance.now();try{const d=await api("/api/v1/workspaces/"+encodeURIComponent(active)+"/chat",{method:"POST",body:JSON.stringify({message:msg,conversation_id:conversation,voice_mode:voice,images})});const requestMs=Math.round(performance.now()-requestStarted);conversation=d.conversation_id;const modelMs=Number(d.model_latency_ms)||0;el("model-badge").textContent=d.provider+" · "+d.model+" · "+(d.runtime==="local"?"LOCAL":"CLOUD");el("model-badge").title="Model response: "+(modelMs?modelMs+" ms":"timing unavailable")+" · Full API round trip: "+requestMs+" ms";if(d.fallback_used)notice("Model availability notice: "+(d.selected_model||"selected model")+" was unavailable or rate-limited. Sovereign switched to "+d.provider+" · "+d.model+" using your configured fallback order.","warning");if(voice){appendTranscript("SOVEREIGN",d.reply);if(callActive&&voiceSession===callSession)speak(d.reply,voiceSession);else setCoreState("idle");}else setCoreState("idle");return d.reply;}catch(error){setCoreState("error");throw error;}}
+
+function createLiveSpeechQueue(session){
+ const queue=[];let active=false,finished=false,stopped=false;
+ const pump=()=>{
+  if(stopped||active)return;
+  const phrase=queue.shift();
+  if(!phrase){if(finished){voiceBusy=false;if(callActive&&session===callSession)listenAgain(160);else setCallState("idle","STANDING BY","Your AI is ready when you are.","Response complete.");}return;}
+  const voices=window.speechSynthesis?.getVoices?.()||[];
+  const selected=voices.find(item=>item.name===prefs.voiceName)||voices.find(item=>item.lang===prefs.voiceLanguage)||voices.find(item=>item.lang?.startsWith((prefs.voiceLanguage||"en-GB").split("-")[0]));
+  const utterance=new SpeechSynthesisUtterance(phrase);utterance.voice=selected||null;utterance.lang=prefs.voiceLanguage||"en-GB";utterance.rate=Math.min(1.2,Math.max(.75,Number(prefs.voiceRate)||1.14));
+  utterance.onstart=()=>{if(session===callSession)setCallState("speaking","SPEAKING","Sovereign is responding.","Speaking while the rest of the answer is generated.");};
+  utterance.onend=()=>{active=false;pump();};
+  utterance.onerror=()=>{active=false;stopped=true;voiceBusy=false;appendTranscript("SYSTEM","Live browser speech stopped. The complete response remains visible.");if(callActive&&session===callSession)listenAgain(500);};
+  active=true;try{window.speechSynthesis.speak(utterance);}catch(error){active=false;stopped=true;voiceBusy=false;appendTranscript("SYSTEM","Live speech could not start: "+error.message);}
+ };
+ return {enqueue(phrase){if(phrase&&!stopped){queue.push(phrase);pump();}},finish(){finished=true;pump();},stop(){stopped=true;queue.length=0;}};
+}
+function takeSpeechPhrases(buffer,flush=false){
+ const phrases=[];let rest=buffer;
+ while(rest){
+  const match=rest.match(/^([\s\S]*?[.!?](?:["')\]]*)\s+)/);
+  if(match){phrases.push(match[1].trim());rest=rest.slice(match[0].length);continue;}
+  if(rest.length>180){const cut=rest.lastIndexOf(" ",180);if(cut>70){phrases.push(rest.slice(0,cut).trim());rest=rest.slice(cut+1);continue;}}
+  break;
+ }
+ if(flush&&rest.trim())phrases.push(rest.trim());
+ return {phrases,rest:flush?"":rest};
+}
+async function sendMessage(msg,{voice=false,voiceSession=callSession,images=[],onDelta=null}={}){
+ if(!active)throw Error("Choose a workspace first.");
+ setCoreState("thinking");const requestStarted=performance.now();
+ if(images.length){
+  const d=await api("/api/v1/workspaces/"+encodeURIComponent(active)+"/chat",{method:"POST",body:JSON.stringify({message:msg,conversation_id:conversation,voice_mode:voice,images})});
+  conversation=d.conversation_id;el("model-badge").textContent=d.provider+" · "+d.model+" · "+(d.runtime==="local"?"LOCAL":"CLOUD");
+  if(voice){appendTranscript("SOVEREIGN",d.reply);if(callActive&&voiceSession===callSession)speak(d.reply,voiceSession);else setCoreState("idle");}else setCoreState("idle");return d.reply;
+ }
+ let response;
+ try{response=await fetch(base.replace(/\/$/,"")+"/api/v1/workspaces/"+encodeURIComponent(active)+"/chat/stream",{
+  method:"POST",headers:{"Content-Type":"application/json","Authorization":"Bearer "+token,"Accept":"text/event-stream"},
+  body:JSON.stringify({message:msg,conversation_id:conversation,voice_mode:voice,images:[]}),signal:AbortSignal.timeout(120000)
+ });}catch(error){setCoreState("error");throw error;}
+ if(!response.ok){let detail="HTTP "+response.status;try{const data=await response.json();detail=data.detail||detail;}catch(error){}setCoreState("error");throw new Error(detail);}
+ if(!response.body){setCoreState("error");throw new Error("This browser does not support streamed responses.");}
+ const startedAt=performance.now();let fullReply="",buffer="",done=null,transcriptBody=null,speech=null,speechBuffer="";
+ if(voice){
+  stopMicrophone(true);stopVoicePlayback();voiceBusy=true;
+  const transcript=appendTranscript("SOVEREIGN","");transcriptBody=transcript.querySelector("p");
+  if(window.speechSynthesis&&typeof SpeechSynthesisUtterance!=="undefined")speech=createLiveSpeechQueue(voiceSession);
+  setCallState("thinking","THINKING","Sovereign is listening and responding.","Answer text and speech will arrive incrementally.");
+ }
+ const handleFrame=frame=>{
+  if(!frame.trim())return;let eventName="",dataLines=[];
+  for(const line of frame.split(/\r?\n/)){if(line.startsWith("event:"))eventName=line.slice(6).trim();else if(line.startsWith("data:"))dataLines.push(line.slice(5).trimStart());}
+  if(!dataLines.length)return;let data;try{data=JSON.parse(dataLines.join("\n"));}catch(error){throw new Error("The streaming API sent an invalid event.");}
+  if(eventName==="start")conversation=data.conversation_id;
+  else if(eventName==="delta"){
+   const delta=String(data.text||"");if(!delta)return;fullReply+=delta;if(onDelta)onDelta(delta,fullReply);
+   if(transcriptBody){transcriptBody.textContent=fullReply;el("call-transcript").scrollTop=el("call-transcript").scrollHeight;}
+   if(speech){speechBuffer+=speechText(delta);const split=takeSpeechPhrases(speechBuffer);speechBuffer=split.rest;split.phrases.forEach(phrase=>speech.enqueue(phrase));}
+  }else if(eventName==="done")done=data;else if(eventName==="error")throw new Error(data.message||"The streamed response failed.");
+ };
+ try{
+  const reader=response.body.getReader(),decoder=new TextDecoder();
+  while(true){const {value,done:ended}=await reader.read();if(ended)break;buffer+=decoder.decode(value,{stream:true});const frames=buffer.split(/\r?\n\r?\n/);buffer=frames.pop()||"";for(const frame of frames)handleFrame(frame);}
+  buffer+=decoder.decode();if(buffer.trim())handleFrame(buffer);
+  if(!done)throw new Error("The stream ended before the completion event.");if(!fullReply.trim())throw new Error("The model returned no text.");
+  const requestMs=Math.round(performance.now()-requestStarted),modelMs=Number(done.model_latency_ms)||Math.round(performance.now()-startedAt);
+  el("model-badge").textContent=done.provider+" · "+done.model+" · "+(done.runtime==="local"?"LOCAL":"CLOUD");
+  el("model-badge").title="First streamed text: "+Math.round(startedAt-requestStarted)+" ms · Model completion: "+modelMs+" ms · Total: "+requestMs+" ms";
+  if(done.fallback_used)notice("Model availability notice: Sovereign used your configured fallback order and selected "+done.provider+" · "+done.model+".","warning");
+  if(voice){if(speech){const finalSplit=takeSpeechPhrases(speechBuffer,true);finalSplit.phrases.forEach(phrase=>speech.enqueue(phrase));speech.finish();}else if(callActive&&voiceSession===callSession)speak(fullReply,voiceSession);else voiceBusy=false;}else setCoreState("idle");
+  return fullReply;
+ }catch(error){if(speech)speech.stop();if(voice){voiceBusy=false;if(callActive&&voiceSession===callSession)listenAgain(500);}setCoreState("error");throw error;}
+}
 el("workspace").onchange=async e=>{active=e.target.value;conversation=null;renderWorkspaces();updateCallSupport();try{await Promise.all([conversations(),approvals(),loadAgentTasks()]);}catch(err){notice(err.message,"error");}};
 el("connect").onclick=()=>{if(base&&token)connect();else view("settings");};
 el("save").onclick=autoConnectLocal;
