@@ -25,6 +25,23 @@ load_dotenv(PROJECT_ROOT / ".env.local", override=False)
 def now():
     return datetime.now(timezone.utc).isoformat()
 
+
+def _is_disallowed_model(provider: str, model: str) -> bool:
+    provider_name = str(provider or "").casefold()
+    model_name = str(model or "").casefold()
+    return ("qwen" in provider_name or "qwen" in model_name
+            or model_name in {"openrouter/free", "auto"})
+
+
+def _permitted_model_indices(router):
+    candidates = getattr(router, "candidates", None)
+    if candidates is None:
+        return None
+    return [
+        index for index, candidate in enumerate(candidates)
+        if not _is_disallowed_model(candidate.info.provider, candidate.info.model)
+    ]
+
 class VoiceInput(BaseModel):
     text: str = Field(min_length=1, max_length=3000)
     rate: float = Field(default=1.14, ge=0.75, le=1.2)
@@ -100,6 +117,9 @@ class SovereignAPI:
         if self.router is None:
             from .model_router import ModelRouter
             self.router = ModelRouter(max_tokens=int(os.getenv("SOVEREIGN_MAX_OUTPUT_TOKENS", "800")))
+            permitted = _permitted_model_indices(self.router)
+            if permitted and self.router.active_index not in permitted:
+                self.router.active_index = permitted[0]
         return self.router
 
     def chat(self, workspace_id, payload):
@@ -141,6 +161,12 @@ class SovereignAPI:
                 messages.append(HumanMessage(content=item["content"]) if item["role"] == "user"
                                 else AIMessage(content=item["content"]))
             router = self.get_router()
+            candidate_indices = _permitted_model_indices(router)
+            if candidate_indices is not None and not candidate_indices:
+                raise HTTPException(
+                    409,
+                    "Chat is paused: Qwen and dynamic model aliases are excluded. Configure an explicitly named non-Qwen model first."
+                )
             if payload.images:
                 content = [{"type": "text", "text": payload.message}]
                 content.extend({"type": "image_url", "image_url": {"url": image}} for image in payload.images)
@@ -152,6 +178,7 @@ class SovereignAPI:
                 messages,
                 max_tokens=192 if payload.voice_mode else None,
                 require_vision=bool(payload.images),
+                candidate_indices=candidate_indices,
             )
             model_latency_ms = round((time.perf_counter() - model_started) * 1000)
             reply = response.content if hasattr(response, "content") else str(response)
@@ -586,6 +613,11 @@ def create_app(db_path=None, router=None, token=None):
                 "configuration_mode": "backend-environment"}
     @app.post("/api/v1/models/select", dependencies=[Depends(authorize)])
     def select_model(payload: ModelSelectInput):
+        if _is_disallowed_model(payload.provider, payload.model):
+            raise HTTPException(
+                409,
+                "Qwen and dynamic model aliases are disabled in this SovereignOS session."
+            )
         router_instance = state.get_router()
         try:
             selected = router_instance.select_model(payload.provider, payload.model)
@@ -628,15 +660,9 @@ def create_app(db_path=None, router=None, token=None):
                 "verification_criterion for every tool step. The server assigns permissions independently."
             )
             planner_router = state.get_router()
-            candidate_indices = None
-            if hasattr(planner_router, "candidates"):
-                # Never engage Qwen or dynamic free-model aliases in the agent planner.
-                candidate_indices = [
-                    index for index, candidate in enumerate(planner_router.candidates)
-                    if "qwen" not in candidate.info.model.casefold()
-                    and "qwen" not in candidate.info.provider.casefold()
-                    and candidate.info.model.casefold() not in {"openrouter/free", "auto"}
-                ]
+            candidate_indices = _permitted_model_indices(planner_router)
+            if candidate_indices is not None:
+                # The same exclusion applies to chat and planning: no silent Qwen fallback.
                 if not candidate_indices:
                     raise HTTPException(
                         409,
