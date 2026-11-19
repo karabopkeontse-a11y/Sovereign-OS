@@ -24,3 +24,9 @@ test("live voice queues complete phrases while generation continues",async()=>{
  assert.match(js,/speech\.enqueue\(phrase\)/);
  assert.match(js,/speaking while the rest of the answer is generated/i);
 });
+
+test("live voice transcript returns its element for incremental updates",async()=>{
+ const js=await readFile(new URL("src/main.js",root),"utf8");
+ assert.match(js,/function appendTranscript\(who,text\)[^\n]*return item;/);
+ assert.match(js,/const transcript=appendTranscript\("SOVEREIGN",""\);transcriptBody=transcript\.querySelector\("p"\)/);
+});
