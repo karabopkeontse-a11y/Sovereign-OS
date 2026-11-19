@@ -799,6 +799,13 @@ async function startBatchRecognition(session){
     if(now-micLastVoiceAt>=850||now-micSpeechStartedAt>=18000)finishUtterance();
    }
 
+   if(!micSpeechStartedAt&&now-micCalibrationStartedAt>=12000){
+    micDiscard=true;
+    stopMicrophone(true);
+    setCallState("listening","NO SPEECH DETECTED","I'm still here.","I didn't detect speech. Check the selected microphone and speak a little closer.");
+    if(callActive&&session===callSession)listenAgain(500);
+    return;
+   }
    if(!micFinalizing)micFrame=requestAnimationFrame(inspectLevel);
   };
 
