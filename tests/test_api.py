@@ -249,7 +249,7 @@ class SovereignAPITests(unittest.TestCase):
                              headers=self.headers,
                              json={"goal":"Prepare a safe plan for a project milestone."})
         self.assertEqual(result.status_code, 200, result.text)
-        self.assertEqual(result.json()["task"]["status"], "planned")
+        self.assertEqual(result.json()["task"]["status"], "awaiting_approval")
 
     def test_voice_status_is_authenticated_and_reports_dependencies(self):
         denied = self.client.get("/api/v1/voice/status")
