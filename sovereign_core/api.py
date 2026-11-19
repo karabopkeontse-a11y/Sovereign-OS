@@ -875,6 +875,63 @@ def create_app(db_path=None, router=None, token=None):
                     pass
             raise HTTPException(500, "Agent tool failed safely: " + type(exc).__name__ + ": " + str(exc))
 
+    @app.post("/api/v1/workspaces/{workspace_id}/agent/tasks/{problem_id}/run-safe", dependencies=[Depends(authorize)])
+    def run_safe_agent_steps(workspace_id: str, problem_id: str):
+        """Run consecutive registered safe steps, stopping at the first approval boundary."""
+        try:
+            workspace = state.workspaces.get_workspace(workspace_id)
+        except ValueError:
+            raise HTTPException(404, "Workspace not found")
+        tasks = state.workspaces.tasks
+        problem = tasks.get_problem(problem_id)
+        if not problem or problem.workspace_id != workspace.id:
+            raise HTTPException(404, "Task not found in this workspace")
+        if problem.status in {"blocked", "failed", "completed", "cancelled"}:
+            raise HTTPException(409, "This task is not in an executable state.")
+
+        results = []
+        stop_reason = "No further registered tool steps are ready."
+        stopped_at_approval = False
+        for _ in range(8):
+            next_step = None
+            for candidate in tasks.list_steps(problem.id):
+                if candidate.status in {"verified", "cancelled", "failed", "blocked"}:
+                    continue
+                if tasks.get_step_spec(candidate.id):
+                    next_step = candidate
+                    break
+            if next_step is None:
+                break
+            if next_step.status == "awaiting_approval" or (
+                next_step.permission_level != "read_only" and next_step.status != "approved"
+            ):
+                stopped_at_approval = True
+                stop_reason = "Paused at a step that requires your explicit approval."
+                current = tasks.get_problem(problem.id)
+                if current and current.status == "running":
+                    tasks.set_problem_status(problem.id, "awaiting_approval")
+                break
+            if next_step.status not in {"planned", "approved"}:
+                stop_reason = "Paused because the next step is not in a runnable state."
+                break
+            result = execute_next_agent_step(workspace_id, problem_id)
+            results.append(result)
+            if result.get("task_status") in {"completed", "failed", "blocked", "cancelled"}:
+                break
+        else:
+            stop_reason = "Safe execution batch limit reached; review the task before continuing."
+
+        current = tasks.get_problem(problem.id)
+        return {
+            "task_id": problem.id,
+            "results": results,
+            "executed_count": len(results),
+            "verified": all(item.get("verified") for item in results),
+            "stopped_at_approval": stopped_at_approval,
+            "stop_reason": stop_reason,
+            "task_status": current.status if current else "unknown",
+        }
+
     @app.post("/api/v1/workspaces/{workspace_id}/agent/tasks/{problem_id}/cancel", dependencies=[Depends(authorize)])
     def cancel_agent_task(workspace_id: str, problem_id: str):
         try:
