@@ -45,6 +45,9 @@ class FakeStreamClient:
     def bind(self, **kwargs):
         return FakeStreamBound(self.outcome)
 
+    def stream(self, messages):
+        return FakeStreamBound(self.outcome).stream(messages)
+
 
 class FakeError(Exception):
     status_code = 429
