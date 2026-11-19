@@ -9,7 +9,7 @@ from pathlib import Path
 from uuid import uuid4
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 from dotenv import load_dotenv
 from .workspaces import WorkspaceService
@@ -178,6 +178,145 @@ class SovereignAPI:
                 "fallback_used": used_index != getattr(router, "active_index", used_index),
                 "selected_model": selected, "runtime": info.runtime,
                 "model_latency_ms": model_latency_ms}
+
+
+    def stream_chat(self, workspace_id, payload):
+        """Stream one workspace-scoped assistant turn as server-sent events."""
+        def events():
+            try:
+                workspace = self.workspaces.get_workspace(workspace_id)
+            except ValueError:
+                yield "event: error\\ndata: " + json.dumps({"message": "Workspace not found"}) + "\\n\\n"
+                return
+            if payload.images:
+                yield "event: error\\ndata: " + json.dumps({"message": "Image attachments are not supported by streaming yet."}) + "\\n\\n"
+                return
+
+            db = self.connection()
+            try:
+                conversation_id = payload.conversation_id
+                if conversation_id:
+                    owner = db.execute(
+                        "SELECT id FROM api_conversations WHERE id=? AND workspace_id=?",
+                        (conversation_id, workspace.id),
+                    ).fetchone()
+                    if owner is None:
+                        yield "event: error\\ndata: " + json.dumps({"message": "Conversation not found in this workspace"}) + "\\n\\n"
+                        return
+                else:
+                    conversation_id = str(uuid4())
+                    stamp = now()
+                    db.execute("INSERT INTO api_conversations VALUES (?, ?, ?, ?, ?)",
+                               (conversation_id, workspace.id, payload.message[:72], stamp, stamp))
+                    db.commit()
+                prior = db.execute(
+                    "SELECT role, content FROM api_messages WHERE conversation_id=? "
+                    "ORDER BY created_at DESC LIMIT " + ("6" if payload.voice_mode else "12"),
+                    (conversation_id,),
+                ).fetchall()
+            finally:
+                db.close()
+
+            try:
+                memories = self.workspaces.search(
+                    workspace.id, payload.message, limit=2 if payload.voice_mode else 5
+                )
+                memory_context = "\\n".join("- " + item.content for item in memories)
+                assistant_name = (
+                    "Thothi, the customer-facing SmartFlow BW assistant powered by SovereignOS"
+                    if workspace.name == "SmartFlow BW" else "SovereignOS"
+                )
+                system = (
+                    "You are " + assistant_name + " in the " + workspace.name + " workspace. Purpose: "
+                    + workspace.purpose + ". Use only this workspace context. Never claim to execute "
+                    "external actions. Financial, publishing, destructive and physical-device actions "
+                    "require human approval. Relevant memories:\\n" + (memory_context or "(none)")
+                )
+                if payload.voice_mode:
+                    system += (
+                        " For voice conversations, optimise for a fast live exchange. Give the direct "
+                        "answer first in one or two short sentences, then pause for the user. Avoid long "
+                        "preambles, Markdown, tables and decorative symbols. Ask at most one concise "
+                        "follow-up question when essential."
+                    )
+                from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
+                messages = [SystemMessage(content=system)]
+                for item in reversed(prior):
+                    messages.append(
+                        HumanMessage(content=item["content"]) if item["role"] == "user"
+                        else AIMessage(content=item["content"])
+                    )
+                messages.append(HumanMessage(content=payload.message))
+                router = self.get_router()
+                started = time.perf_counter()
+                reply_parts = []
+                info = None
+                used_index = None
+                yield "event: start\\ndata: " + json.dumps({
+                    "conversation_id": conversation_id, "workspace_id": workspace.id
+                }) + "\\n\\n"
+
+                def text_from_chunk(chunk):
+                    value = getattr(chunk, "content", chunk)
+                    if isinstance(value, str):
+                        return value
+                    if isinstance(value, list):
+                        return "".join(
+                            part.get("text", "") for part in value
+                            if isinstance(part, dict) and part.get("type") in {"text", "text_delta"}
+                        )
+                    return ""
+
+                for chunk, chunk_info, chunk_index in router.stream(
+                    messages, max_tokens=192 if payload.voice_mode else None
+                ):
+                    if info is None:
+                        info, used_index = chunk_info, chunk_index
+                    delta = text_from_chunk(chunk)
+                    if not delta:
+                        continue
+                    reply_parts.append(delta)
+                    yield "event: delta\\ndata: " + json.dumps(
+                        {"text": delta}, ensure_ascii=False
+                    ) + "\\n\\n"
+
+                reply = "".join(reply_parts)
+                if info is None or not reply:
+                    raise RuntimeError("The model stream completed without any text output.")
+                latency_ms = round((time.perf_counter() - started) * 1000)
+                db = self.connection()
+                try:
+                    stamp = now()
+                    db.execute("INSERT INTO api_messages VALUES (?, ?, ?, ?, ?, ?, ?)",
+                               (str(uuid4()), conversation_id, "user", payload.message, None, None, stamp))
+                    db.execute("INSERT INTO api_messages VALUES (?, ?, ?, ?, ?, ?, ?)",
+                               (str(uuid4()), conversation_id, "assistant", reply,
+                                info.provider, info.model, stamp))
+                    db.execute("UPDATE api_conversations SET updated_at=? WHERE id=?",
+                               (stamp, conversation_id))
+                    db.commit()
+                finally:
+                    db.close()
+                health = router.health_snapshot() if hasattr(router, "health_snapshot") else []
+                selected = next((item.get("model") for item in health if item.get("active")), None)
+                yield "event: done\\ndata: " + json.dumps({
+                    "conversation_id": conversation_id,
+                    "workspace_id": workspace.id,
+                    "provider": info.provider,
+                    "model": info.model,
+                    "runtime": info.runtime,
+                    "fallback_used": used_index != getattr(router, "active_index", used_index),
+                    "selected_model": selected,
+                    "model_latency_ms": latency_ms,
+                }) + "\\n\\n"
+            except GeneratorExit:
+                raise
+            except Exception as exc:
+                yield "event: error\\ndata: " + json.dumps({
+                    "message": "Model stream failed: " + type(exc).__name__ + ": " + str(exc)
+                }) + "\\n\\n"
+
+        return events()
 
 
 def create_libreoffice_test_document(workspace_root: Path):
@@ -496,6 +635,13 @@ def create_app(db_path=None, router=None, token=None):
     @app.post("/api/v1/workspaces/{workspace_id}/chat", dependencies=[Depends(authorize)])
     def chat(workspace_id: str, payload: ChatInput):
         return state.chat(workspace_id, payload)
+    @app.post("/api/v1/workspaces/{workspace_id}/chat/stream", dependencies=[Depends(authorize)])
+    def chat_stream(workspace_id: str, payload: ChatInput):
+        return StreamingResponse(
+            state.stream_chat(workspace_id, payload),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
     @app.get("/api/v1/models/specialists", dependencies=[Depends(authorize)])
     def model_specialists():
         router_instance = state.get_router()
