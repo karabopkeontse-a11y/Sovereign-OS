@@ -27,7 +27,7 @@ if([0.96,1.08].includes(Number(prefs.voiceRate)))prefs.voiceRate=1.14;
 function savePrefs(){localStorage.setItem("sovereign-ui-preferences",JSON.stringify(prefs));}
 let audioContext=null;
 
-let activeAudio=null,activeAudioUrl=null,voiceRequestController=null,activeUtterance=null;
+let activeAudio=null,activeAudioUrl=null,voiceRequestController=null,activeUtterance=null,lastSpokenText="";
 
 let liveRecognition=null,liveInterimText="",liveFinalizing=false;
 
@@ -339,7 +339,7 @@ function updateCallSupport(){
 }function appendTranscript(who,text){const empty=el("call-transcript").querySelector(".transcript-empty");if(empty)empty.remove();const item=document.createElement("div");item.className="transcript-line";const label=document.createElement("b");label.textContent=who;const body=document.createElement("p");body.textContent=text;item.append(label,body);el("call-transcript").append(item);el("call-transcript").scrollTop=el("call-transcript").scrollHeight;}
 function setCallState(state,label,title,description){el("call-shell").dataset.state=state;el("call-status").textContent=label;el("call-status").className="status-tag "+(["listening","thinking","speaking"].includes(state)?"status-live":state==="error"?"status-warn":"status-idle");el("voice-orb").classList.toggle("voice-active",["listening","thinking","speaking"].includes(state));const visual=el("voice-state-indicator");if(visual){visual.dataset.state=state;el("voice-state-label").textContent=label;el("voice-state-detail").textContent=description;}setCoreState(state);el("call-title").textContent=title;el("call-description").textContent=description;}
 function clearListenTimer(){if(listenTimer!==null){window.clearTimeout(listenTimer);listenTimer=null;}}
-async function speak(text,session=callSession,preferLocal=true){
+async function speak(text,session=callSession,preferLocal=true,allowOutsideCall=false){
     stopMicrophone(true);
     stopVoicePlayback();
     voiceBusy=true;
@@ -351,6 +351,10 @@ async function speak(text,session=callSession,preferLocal=true){
         if(callActive)listenAgain(250);
         return;
     }
+
+    lastSpokenText=spoken;
+    const replayButton=el("call-replay");
+    if(replayButton)replayButton.disabled=false;
 
     if(preferLocal&&window.speechSynthesis&&typeof SpeechSynthesisUtterance!=="undefined"){
         const voices=window.speechSynthesis.getVoices();
@@ -376,7 +380,7 @@ async function speak(text,session=callSession,preferLocal=true){
             activeUtterance=null;voiceBusy=false;
             if(voiceCapabilities?.speech_output_available){
                 appendTranscript("SYSTEM","Browser speech output failed. Switching to SovereignOS Edge TTS.");
-                speak(text,session,false);
+                speak(text,session,false,allowOutsideCall);
             }else{
                 appendTranscript("SYSTEM","Browser speech output failed. The response remains available as text.");
                 if(callActive)listenAgain(500);else setCoreState("error");
@@ -390,7 +394,7 @@ async function speak(text,session=callSession,preferLocal=true){
             voiceBusy=false;
             if(voiceCapabilities?.speech_output_available){
                 appendTranscript("SYSTEM","Browser speech output could not start. Switching to SovereignOS Edge TTS.");
-                return speak(text,session,false);
+                return speak(text,session,false,allowOutsideCall);
             }
             appendTranscript("SYSTEM","Browser speech output could not start. The response remains available as text.");
             if(callActive)listenAgain(500);
@@ -429,7 +433,7 @@ async function speak(text,session=callSession,preferLocal=true){
 
         const blob=await response.blob();
         if(!blob.size)throw new Error("The speech service returned empty audio.");
-        if(session!==callSession||!callActive)return;
+        if(session!==callSession||(!callActive&&!allowOutsideCall))return;
 
         const url=URL.createObjectURL(blob);
         activeAudioUrl=url;
@@ -834,6 +838,7 @@ function endCall(){
  updateCallSupport();
 }
 el("call-start").onclick=startCall;el("call-end").onclick=endCall;el("call-interrupt").onclick=interruptCall;
+el("call-replay").onclick=()=>{if(lastSpokenText)speak(lastSpokenText,callSession,true,true);};
 el("run-libreoffice-test").onclick=async()=>{const button=el("run-libreoffice-test"),status=el("libreoffice-test-status");if(!await inAppConfirm({title:"Create LibreOffice test",message:"SovereignOS will create one new test document in its own agent workspace and ask LibreOffice to open it. It will not inspect or change your existing files.",confirmLabel:"Create and open"}))return;setBusy(button,true,"Creating document…");status.textContent="Creating a local test document and locating LibreOffice…";try{const result=await api("/api/v1/desktop/libreoffice/test",{method:"POST",body:JSON.stringify({})});status.textContent="Opened "+result.file_name+" in LibreOffice. Saved only in the SovereignOS agent workspace.";notice("LibreOffice integration test launched successfully.");}catch(error){status.textContent=error.message;notice("LibreOffice test could not complete: "+error.message,"error");}finally{setBusy(button,false);}};
 el("call-text-form").addEventListener("submit",async event=>{event.preventDefault();const field=el("call-text"),send=el("call-send"),message=field.value.trim();if(!message)return;if(!apiConnected||!active){notice("Connect the API and choose a workspace before messaging Sovereign.","warning");return;}if(!routerData?.providers?.length){notice("No AI model is configured. Add a provider credential to the project's local .env file and restart the API.","warning");return;}field.value="";field.style.height="48px";appendTranscript("YOU",message);send.disabled=true;try{const reply=await sendMessage(message,{voice:callActive});if(!callActive)appendTranscript("SOVEREIGN",reply);}catch(error){appendTranscript("SYSTEM",error.message||"Message could not be sent.");notice(error.message||"Message could not be sent.","error");}finally{send.disabled=false;field.focus();}});
 el("call-text").addEventListener("input",event=>{event.target.style.height="48px";event.target.style.height=Math.min(event.target.scrollHeight,132)+"px";});
