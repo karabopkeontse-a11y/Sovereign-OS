@@ -8,3 +8,19 @@ test("voice workspace exposes replay for the latest spoken answer",async()=>{
  assert.match(js,/allowOutsideCall=false/);
  assert.match(js,/!callActive&&!allowOutsideCall/);
 });
+
+test("chat consumes authenticated server-sent text deltas",async()=>{
+ const js=await readFile(new URL("src/main.js",root),"utf8");
+ assert.match(js,/\/chat\/stream/);
+ assert.match(js,/Accept":"text\/event-stream"/);
+ assert.match(js,/eventName==="delta"/);
+ assert.match(js,/onDelta\(delta,fullReply\)/);
+ assert.match(js,/eventName==="done"/);
+});
+test("live voice queues complete phrases while generation continues",async()=>{
+ const js=await readFile(new URL("src/main.js",root),"utf8");
+ assert.match(js,/function createLiveSpeechQueue/);
+ assert.match(js,/function takeSpeechPhrases/);
+ assert.match(js,/speech\.enqueue\(phrase\)/);
+ assert.match(js,/speaking while the rest of the answer is generated/i);
+});
