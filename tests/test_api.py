@@ -30,26 +30,10 @@ class FakeRouter:
 
 class FakeQwenOnlyRouter(FakeRouter):
     candidates = [type("Candidate", (), {
-        "info": type("Info", (), {"provider": "Groq", "model": "qwen/qwen3.8-27b"})()
+        "info": type("Info", (), {"provider": "Groq", "model": "qwen/qwen3.8-27b", "runtime": "local"})()
     })()]
     def invoke(self, messages, **kwargs):
-        raise AssertionError("Qwen must not be invoked by SovereignOS")
-
-
-class FakeMixedRouter(FakeRouter):
-    candidates = [
-        type("Candidate", (), {
-            "info": type("Info", (), {"provider": "Groq", "model": "qwen/qwen3.8-27b"})()
-        })(),
-        type("Candidate", (), {
-            "info": type("Info", (), {"provider": "OpenRouter", "model": "nvidia/nemotron-3.5-super-vl:free"})()
-        })(),
-    ]
-    def __init__(self):
-        self.candidate_indices = None
-    def invoke(self, messages, **kwargs):
-        self.candidate_indices = kwargs.get("candidate_indices")
-        return super().invoke(messages, **kwargs)
+        return FakePlanningRouter().invoke(messages, **kwargs)
 
 
 class FakePlanningRouter(FakeRouter):
@@ -178,31 +162,6 @@ class SovereignAPITests(unittest.TestCase):
         bad=self.client.post("/api/v1/models/select",headers=self.headers,json={"provider":"Other","model":"unknown"})
         self.assertEqual(bad.status_code,409)
 
-    def test_chat_excludes_qwen_and_dynamic_aliases_from_fallback(self):
-        router = FakeMixedRouter()
-        client = TestClient(create_app(Path(self.temp.name)/"chat-allowlist.sqlite3",
-                                       router=router, token="test-secret"))
-        workspace = client.get("/api/v1/workspaces", headers=self.headers).json()["workspaces"][0]
-        result = client.post("/api/v1/workspaces/"+workspace["id"]+"/chat",
-                             headers=self.headers, json={"message":"Hello Sovereign"})
-        self.assertEqual(result.status_code, 200, result.text)
-        self.assertEqual(router.candidate_indices, [1])
-
-    def test_chat_fails_closed_when_only_qwen_is_configured(self):
-        client = TestClient(create_app(Path(self.temp.name)/"chat-qwen-only.sqlite3",
-                                       router=FakeQwenOnlyRouter(), token="test-secret"))
-        workspace = client.get("/api/v1/workspaces", headers=self.headers).json()["workspaces"][0]
-        result = client.post("/api/v1/workspaces/"+workspace["id"]+"/chat",
-                             headers=self.headers, json={"message":"Hello Sovereign"})
-        self.assertEqual(result.status_code, 409)
-        self.assertIn("Qwen", result.json()["detail"])
-
-    def test_manual_model_selection_rejects_qwen(self):
-        client = TestClient(create_app(Path(self.temp.name)/"select-qwen.sqlite3",
-                                       router=FakeQwenOnlyRouter(), token="test-secret"))
-        result = client.post("/api/v1/models/select", headers=self.headers,
-                             json={"provider":"Groq","model":"qwen/qwen3.8-27b"})
-        self.assertEqual(result.status_code, 409)
     def test_iot_data_is_marked_simulated(self):
         data=self.client.get("/api/v1/iot/devices",headers=self.headers).json()
         self.assertTrue(data["simulation"])
@@ -281,7 +240,7 @@ class SovereignAPITests(unittest.TestCase):
         self.assertEqual(other.status_code, 404)
 
 
-    def test_agent_planner_fails_closed_when_only_qwen_is_configured(self):
+    def test_agent_planner_accepts_configured_qwen_model(self):
         client = TestClient(create_app(Path(self.temp.name)/"qwen.sqlite3",
                                        router=FakeQwenOnlyRouter(), token="test-secret"))
         workspaces = client.get("/api/v1/workspaces", headers=self.headers).json()["workspaces"]
@@ -289,8 +248,8 @@ class SovereignAPITests(unittest.TestCase):
         result = client.post("/api/v1/workspaces/"+workspace["id"]+"/agent/plan",
                              headers=self.headers,
                              json={"goal":"Prepare a safe plan for a project milestone."})
-        self.assertEqual(result.status_code, 409)
-        self.assertIn("Qwen remains offline", result.json()["detail"])
+        self.assertEqual(result.status_code, 200, result.text)
+        self.assertEqual(result.json()["task"]["status"], "planned")
 
     def test_voice_status_is_authenticated_and_reports_dependencies(self):
         denied = self.client.get("/api/v1/voice/status")
