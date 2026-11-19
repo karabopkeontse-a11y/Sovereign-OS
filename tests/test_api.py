@@ -70,6 +70,21 @@ class FakeToolPlanningRouter(FakeRouter):
         return Reply(), Info(), 0
 
 
+class FakeSequencingRouter(FakeRouter):
+    def invoke(self, messages, **kwargs):
+        class Reply:
+            content = ('{"title":"Respect ordered plan steps",'
+                       '"description":"Do not skip unsupported planning steps.",'
+                       '"steps":[{"action":"Review the project scope before acting"},'
+                       '{"action":"List workspace files","tool_name":"workspace.list_files",'
+                       '"arguments":{},"verification_criterion":"The scoped file list is returned."}]}')
+        class Info:
+            provider = "Test"
+            model = "sequencing-planner"
+            runtime = "local"
+        return Reply(), Info(), 0
+
+
 class FakeCloudOnlyRouter(FakePlanningRouter):
     calls = 0
     candidates = [type("Candidate", (), {
@@ -304,6 +319,35 @@ class SovereignAPITests(unittest.TestCase):
         created_file = Path(self.temp.name) / "agent_workspace" / workspace["id"] / "approved-draft.md"
         self.assertTrue(created_file.is_file())
         self.assertIn("Created by the approved agent tool", created_file.read_text(encoding="utf-8"))
+
+
+    def test_run_safe_does_not_skip_unregistered_step_ahead_of_registered_tool(self):
+        client = TestClient(create_app(Path(self.temp.name)/"sequence.sqlite3",
+                                       router=FakeSequencingRouter(), token="test-secret"))
+        workspaces = client.get("/api/v1/workspaces", headers=self.headers).json()["workspaces"]
+        workspace = next(w for w in workspaces if w["name"] == "SovereignOS")
+        created = client.post(
+            "/api/v1/workspaces/"+workspace["id"]+"/agent/plan",
+            headers=self.headers,
+            json={"goal":"Review the scope and then inspect the workspace safely."},
+        )
+        self.assertEqual(created.status_code, 200, created.text)
+        steps = created.json()["steps"]
+        self.assertEqual(len(steps), 2)
+        self.assertEqual(steps[0]["action"], "Review the project scope before acting")
+        self.assertEqual(steps[1]["action"], "List workspace files")
+
+        result = client.post(
+            "/api/v1/workspaces/"+workspace["id"]+"/agent/tasks/"+
+            created.json()["task"]["id"]+"/run-safe",
+            headers=self.headers, json={},
+        )
+        self.assertEqual(result.status_code, 200, result.text)
+        self.assertEqual(result.json()["executed_count"], 0)
+        self.assertFalse(result.json()["stopped_at_approval"])
+        self.assertIn("next plan step has no registered tool", result.json()["stop_reason"])
+        self.assertEqual(result.json()["task_status"], "planned")
+        self.assertEqual(result.json()["results"], [])
 
 
     def test_rejecting_a_step_blocks_task_and_cancels_other_pending_steps(self):
