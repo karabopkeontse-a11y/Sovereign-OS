@@ -373,7 +373,8 @@ async function speak(text,session=callSession,preferLocal=true,allowOutsideCall=
         utterance.onend=()=>{
             if(session!==callSession||activeUtterance!==utterance)return;
             activeUtterance=null;voiceBusy=false;
-            if(callActive)listenAgain(160);else setCoreState("idle");
+            if(callActive)listenAgain(160);
+            else setCallState("idle","STANDING BY","Your AI is ready when you are.","Replay complete.");
         };
         utterance.onerror=()=>{
             if(session!==callSession||activeUtterance!==utterance)return;
@@ -451,7 +452,7 @@ async function speak(text,session=callSession,preferLocal=true,allowOutsideCall=
             stopVoicePlayback();
             voiceBusy=false;
             if(callActive)listenAgain(160);
-            else setCoreState("idle");
+            else setCallState("idle","STANDING BY","Your AI is ready when you are.","Replay complete.");
         };
 
         audio.onerror=()=>{
