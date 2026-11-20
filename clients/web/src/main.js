@@ -550,6 +550,7 @@ async function speak(text,session=callSession,preferLocal=true,allowOutsideCall=
 }
 
 function stopMicrophone(discard=true){
+ if(discard&&!bargeInTriggered)bargeInMonitoring=false;
  stopStreamingRecognition();
  micDiscard=discard;
  if(micFrame!==null){cancelAnimationFrame(micFrame);micFrame=null;}
@@ -635,7 +636,7 @@ async function transcribeVoiceBlob(blob,session){
 }
 
 async function startBatchRecognition(session){
- if(!callActive||session!==callSession||voiceBusy||micStream)return;
+ if(!callActive||session!==callSession||(voiceBusy&&!bargeInMonitoring)||micStream)return;
  if(!navigator.mediaDevices?.getUserMedia||!window.MediaRecorder){
   setCallState("error","MICROPHONE UNAVAILABLE","I can't open the microphone.","Use Microsoft Edge and allow microphone access for localhost.");
   return;
@@ -791,7 +792,13 @@ async function startBatchRecognition(session){
      if(micAboveCount>=3){
       micSpeechStartedAt=now;
       micLastVoiceAt=now;
-
+      if(bargeInMonitoring&&!bargeInTriggered){
+       bargeInTriggered=true;
+       bargeInMonitoring=false;
+       stopVoicePlayback();
+       if(voiceStreamController){voiceStreamController.abort();voiceStreamController=null;}
+       setCallState("listening","INTERRUPTED","I'm listening to you.","Sovereign paused. Finish speaking, then I'll respond.");
+      }
      }
     }
    }else{
@@ -870,6 +877,7 @@ async function startCall(){
  if(!approved)return;
  callSession++;
  voiceCloudConsentSession=callSession;
+ bargeInMonitoring=false;bargeInTriggered=false;
  clearListenTimer();
  stopMicrophone(true);
  stopVoicePlayback();
@@ -883,6 +891,8 @@ async function startCall(){
 }
 
 function interruptCall(){
+ bargeInMonitoring=false;bargeInTriggered=false;
+ if(voiceStreamController){voiceStreamController.abort();voiceStreamController=null;}
  callSession++;
  clearListenTimer();
  clearInterval(voiceWaitTimer);
@@ -900,6 +910,8 @@ function interruptCall(){
 }
 
 function endCall(){
+ bargeInMonitoring=false;bargeInTriggered=false;
+ if(voiceStreamController){voiceStreamController.abort();voiceStreamController=null;}
  callActive=false;
  callSession++;
  clearListenTimer();
