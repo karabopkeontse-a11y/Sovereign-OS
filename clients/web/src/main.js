@@ -748,7 +748,11 @@ async function startBatchRecognition(session){
 
   const gainText=trackSettings.autoGainControl===false?
    "Automatic microphone gain unavailable":"Automatic microphone gain enabled";
-  setCallState("listening","LISTENING","I'm listening",gainText+" · "+micLabel);
+  if(bargeInMonitoring&&!bargeInTriggered){
+   setCallState("speaking","SPEAKING","Sovereign is responding.","Listening for your interruption · "+gainText+" · "+micLabel);
+  }else{
+   setCallState("listening","LISTENING","I'm listening",gainText+" · "+micLabel);
+  }
 
   const samples=new Float32Array(micAnalyser.fftSize);
 
