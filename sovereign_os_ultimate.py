@@ -2088,7 +2088,21 @@ if __name__ == "__main__":
             height=900,
             min_size=(1024, 700),
         )
-        webview.start(gui="edgechromium", debug=False)
+        # Use a stable, app-specific WebView2 profile instead of pywebview's
+        # disposable temporary profile. Windows can keep WebView2 child-process
+        # files locked briefly during shutdown; a persistent UDF avoids deleting
+        # a live profile and preserves harmless UI preferences between runs.
+        local_app_data = Path(
+            os.getenv("LOCALAPPDATA") or (Path.home() / "AppData" / "Local")
+        )
+        webview_data = local_app_data / "SovereignOS" / "WebView2"
+        webview_data.mkdir(parents=True, exist_ok=True)
+        webview.start(
+            gui="edgechromium",
+            debug=False,
+            private_mode=False,
+            storage_path=str(webview_data),
+        )
     else:
         print("Launching SovereignOS in local browser mode.")
         ui.run(
