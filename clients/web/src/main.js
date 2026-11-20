@@ -27,7 +27,7 @@ if([0.96,1.08].includes(Number(prefs.voiceRate)))prefs.voiceRate=1.14;
 function savePrefs(){localStorage.setItem("sovereign-ui-preferences",JSON.stringify(prefs));}
 let audioContext=null;
 
-let activeAudio=null,activeAudioUrl=null,voiceRequestController=null,activeUtterance=null,lastSpokenText="";
+let activeAudio=null,activeAudioUrl=null,voiceRequestController=null,activeUtterance=null,lastSpokenText="",voiceStreamController=null,activeLiveSpeechStop=null,bargeInMonitoring=false,bargeInTriggered=false;
 
 let liveRecognition=null,liveInterimText="",liveFinalizing=false,voiceCloudConsentSession=0;
 
@@ -45,6 +45,7 @@ function stopStreamingRecognition(){
 }
 
 function stopVoicePlayback(){
+    if(activeLiveSpeechStop)activeLiveSpeechStop();
     const controller=voiceRequestController;
     voiceRequestController=null;
     if(controller)controller.abort();
@@ -308,20 +309,38 @@ function speechText(value){let text=cleanAssistantText(value);const urls=[];text
 function addBubble(role,text,images=[]){const box=el("messages");const welcome=box.querySelector(".chat-welcome");if(welcome)welcome.remove();if(box.childNodes.length===1&&box.firstChild.nodeType===3&&/No conversations|Connect the API/.test(box.textContent))box.replaceChildren();const b=document.createElement("div");b.className="bubble "+(role==="user"?"user":"assistant");if(role==="assistant"){const source=String(text??"");const pattern=/!\[([^\]]*)\]\((https?:\/\/[^\s)]+)\)/g;let cursor=0,match;while((match=pattern.exec(source))){const before=source.slice(cursor,match.index);if(before.trim()){const p=document.createElement("p");p.textContent=cleanAssistantText(before);b.append(p);}const img=document.createElement("img");img.className="assistant-image";img.src=match[2];img.alt=match[1]||"Sovereign illustration";img.loading="lazy";img.referrerPolicy="no-referrer";b.append(img);cursor=pattern.lastIndex;}const tail=source.slice(cursor);if(tail.trim()){const p=document.createElement("p");p.textContent=cleanAssistantText(tail);b.append(p);}if(!b.childNodes.length)b.textContent=cleanAssistantText(source);}else{b.textContent=text;images.forEach(src=>{const img=document.createElement("img");img.className="assistant-image";img.src=src;img.alt="User attached image";img.loading="lazy";b.append(img);});}box.append(b);box.scrollTop=box.scrollHeight;return b;}
 
 function createLiveSpeechQueue(session){
- const queue=[];let active=false,finished=false,stopped=false;
+ const queue=[];let active=false,finished=false,stopped=false,monitorStarted=false;
+ const closeMonitor=()=>{
+  if(!monitorStarted)return;
+  monitorStarted=false;bargeInMonitoring=false;
+  if(micStream&&!bargeInTriggered)stopMicrophone(true);
+ };
  const pump=()=>{
   if(stopped||active)return;
   const phrase=queue.shift();
-  if(!phrase){if(finished){voiceBusy=false;if(callActive&&session===callSession)listenAgain(160);else setCallState("idle","STANDING BY","Your AI is ready when you are.","Response complete.");}return;}
+  if(!phrase){
+   if(finished&&!bargeInTriggered){
+    closeMonitor();voiceBusy=false;
+    if(callActive&&session===callSession)listenAgain(160);
+    else setCallState("idle","STANDING BY","Your AI is ready when you are.","Response complete.");
+   }
+   return;
+  }
   const voices=window.speechSynthesis?.getVoices?.()||[];
   const selected=voices.find(item=>item.name===prefs.voiceName)||voices.find(item=>item.lang===prefs.voiceLanguage)||voices.find(item=>item.lang?.startsWith((prefs.voiceLanguage||"en-GB").split("-")[0]));
   const utterance=new SpeechSynthesisUtterance(phrase);utterance.voice=selected||null;utterance.lang=prefs.voiceLanguage||"en-GB";utterance.rate=Math.min(1.2,Math.max(.75,Number(prefs.voiceRate)||1.14));
-  utterance.onstart=()=>{if(session===callSession)setCallState("speaking","SPEAKING","Sovereign is responding.","Speaking while the rest of the answer is generated.");};
+  utterance.onstart=()=>{
+   if(session!==callSession||!callActive)return;
+   setCallState("speaking","SPEAKING","Sovereign is responding.","Speaking and listening for interruptions · echo cancellation enabled.");
+   if(!monitorStarted&&!bargeInTriggered){monitorStarted=true;bargeInMonitoring=true;startBatchRecognition(session);}
+  };
   utterance.onend=()=>{active=false;pump();};
-  utterance.onerror=()=>{active=false;stopped=true;voiceBusy=false;appendTranscript("SYSTEM","Live browser speech stopped. The complete response remains visible.");if(callActive&&session===callSession)listenAgain(500);};
-  active=true;try{window.speechSynthesis.speak(utterance);}catch(error){active=false;stopped=true;voiceBusy=false;appendTranscript("SYSTEM","Live speech could not start: "+error.message);}
+  utterance.onerror=()=>{active=false;stopped=true;closeMonitor();voiceBusy=false;if(!bargeInTriggered)appendTranscript("SYSTEM","Live browser speech stopped. The complete response remains visible.");if(callActive&&session===callSession&&!bargeInTriggered)listenAgain(500);};
+  active=true;try{window.speechSynthesis.speak(utterance);}catch(error){active=false;stopped=true;closeMonitor();voiceBusy=false;appendTranscript("SYSTEM","Live speech could not start: "+error.message);}
  };
- return {enqueue(phrase){if(phrase&&!stopped){queue.push(phrase);pump();}},finish(){finished=true;pump();},stop(){stopped=true;queue.length=0;}};
+ const stopQueue=()=>{stopped=true;queue.length=0;if(activeLiveSpeechStop===stopQueue)activeLiveSpeechStop=null;};
+ activeLiveSpeechStop=stopQueue;
+ return {enqueue(phrase){if(phrase&&!stopped){queue.push(phrase);pump();}},finish(){finished=true;pump();},stop:stopQueue};
 }
 function takeSpeechPhrases(buffer,flush=false){
  const phrases=[];let rest=buffer;
@@ -343,10 +362,13 @@ async function sendMessage(msg,{voice=false,voiceSession=callSession,images=[],o
   if(voice){appendTranscript("SOVEREIGN",d.reply);if(callActive&&voiceSession===callSession)speak(d.reply,voiceSession);else setCoreState("idle");}else setCoreState("idle");return d.reply;
  }
  let response;
+ const streamController=voice?new AbortController():null;
+ if(voice){voiceStreamController=streamController;bargeInMonitoring=false;bargeInTriggered=false;}
  try{response=await fetch(base.replace(/\/$/,"")+"/api/v1/workspaces/"+encodeURIComponent(active)+"/chat/stream",{
   method:"POST",headers:{"Content-Type":"application/json","Authorization":"Bearer "+token,"Accept":"text/event-stream"},
-  body:JSON.stringify({message:msg,conversation_id:conversation,voice_mode:voice,images:[]}),signal:AbortSignal.timeout(120000)
- });}catch(error){setCoreState("error");throw error;}
+  body:JSON.stringify({message:msg,conversation_id:conversation,voice_mode:voice,images:[]}),
+  signal:voice?AbortSignal.any([streamController.signal,AbortSignal.timeout(120000)]):AbortSignal.timeout(120000)
+ });}catch(error){if(voice&&voiceStreamController===streamController)voiceStreamController=null;if(!(voice&&bargeInTriggered))setCoreState("error");throw error;}
  if(!response.ok){let detail="HTTP "+response.status;try{const data=await response.json();detail=data.detail||detail;}catch(error){}setCoreState("error");throw new Error(detail);}
  if(!response.body){setCoreState("error");throw new Error("This browser does not support streamed responses.");}
  const startedAt=performance.now();let fullReply="",buffer="",done=null,transcriptBody=null,speech=null,speechBuffer="";
@@ -378,7 +400,19 @@ async function sendMessage(msg,{voice=false,voiceSession=callSession,images=[],o
   if(done.fallback_used)notice("Model availability notice: Sovereign used your configured fallback order and selected "+done.provider+" · "+done.model+".","warning");
   if(voice){if(speech){const finalSplit=takeSpeechPhrases(speechBuffer,true);finalSplit.phrases.map(speechText).filter(Boolean).forEach(phrase=>speech.enqueue(phrase));speech.finish();}else if(callActive&&voiceSession===callSession)speak(fullReply,voiceSession);else voiceBusy=false;}else setCoreState("idle");
   return fullReply;
- }catch(error){if(speech)speech.stop();if(voice){voiceBusy=false;if(callActive&&voiceSession===callSession)listenAgain(500);}setCoreState("error");throw error;}
+ }catch(error){
+  if(speech)speech.stop();
+  if(voice){
+   if(voiceStreamController===streamController)voiceStreamController=null;
+   if(bargeInTriggered&&callActive&&voiceSession===callSession){
+    setCallState("listening","LISTENING","I'm listening.","Sovereign paused. Finish speaking, then I'll respond.");
+    throw error;
+   }
+   voiceBusy=false;
+   if(callActive&&voiceSession===callSession)listenAgain(500);
+  }
+  setCoreState("error");throw error;
+ }finally{if(voice&&voiceStreamController===streamController)voiceStreamController=null;}
 }
 el("workspace").onchange=async e=>{active=e.target.value;conversation=null;renderWorkspaces();updateCallSupport();try{await Promise.all([conversations(),approvals(),loadAgentTasks()]);}catch(err){notice(err.message,"error");}};
 el("connect").onclick=()=>{if(base&&token)connect();else view("settings");};
