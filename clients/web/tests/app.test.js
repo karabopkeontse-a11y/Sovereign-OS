@@ -32,6 +32,25 @@ test("live voice transcript returns its element for incremental updates",async()
 });
 
 
+test("live voice opens an echo-cancelled microphone monitor during speech playback",async()=>{
+ const js=await readFile(new URL("src/main.js",root),"utf8");
+ assert.match(js,/monitorStarted=true;bargeInMonitoring=true;startBatchRecognition\(session\)/);
+ assert.match(js,/echoCancellation:true/);
+ assert.match(js,/Listening for your interruption/);
+});
+test("speaking over Sovereign cancels playback and the active model stream",async()=>{
+ const js=await readFile(new URL("src/main.js",root),"utf8");
+ assert.match(js,/if\(bargeInMonitoring&&!bargeInTriggered\)/);
+ assert.match(js,/bargeInTriggered=true/);
+ assert.match(js,/stopVoicePlayback\(\)/);
+ assert.match(js,/voiceStreamController\.abort\(\)/);
+ assert.match(js,/Finish speaking, then I'll respond/);
+});
+test("manual interrupt and end-call cancel the active voice stream",async()=>{
+ const js=await readFile(new URL("src/main.js",root),"utf8");
+ assert.match(js,/function interruptCall\(\)[\s\S]*?voiceStreamController\.abort\(\)/);
+ assert.match(js,/function endCall\(\)[\s\S]*?voiceStreamController\.abort\(\)/);
+});
 test("voice capture preserves ordered MediaRecorder chunks and asks for cloud consent",async()=>{
  const js=await readFile(new URL("src/main.js",root),"utf8");
  assert.ok(js.includes("micChunks.push(event.data)"));
