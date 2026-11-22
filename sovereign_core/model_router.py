@@ -361,8 +361,69 @@ class ModelRouter:
             })
         return rows
 
+    def stream(self, messages, max_tokens: int | None = None,
+               start_index: int | None = None,
+               candidate_indices: list[int] | None = None):
+        """Yield (chunk, model_info, candidate_index) from the first usable stream.
+
+        Fail over only before the first chunk is emitted. Once output is visible,
+        switching providers would splice two different answers together.
+        """
+        if start_index is None:
+            start_index = self.active_index
+        failures: list[str] = []
+        if not self.candidates:
+            details = " ".join(self.configuration_warnings)
+            raise ModelRoutingError(
+                "No model provider is configured. " + details,
+                checkout_url=self.checkout_url,
+            )
+        start_index = max(0, min(int(start_index), len(self.candidates) - 1))
+        order = list(range(start_index, len(self.candidates))) + list(range(0, start_index))
+        if candidate_indices is not None:
+            allowed = {int(index) for index in candidate_indices
+                       if isinstance(index, int) and 0 <= index < len(self.candidates)}
+            order = [index for index in order if index in allowed]
+            if not order:
+                raise ModelRoutingError("No permitted model candidate is available for this request.")
+        for index in order:
+            candidate = self.candidates[index]
+            eligible, reason = self._eligible(candidate)
+            if not eligible:
+                failures.append(f"{candidate.info.label}: skipped: {reason}")
+                continue
+            emitted = False
+            try:
+                model = candidate.client
+                if max_tokens is not None:
+                    model = model.bind(max_tokens=int(max_tokens))
+                stream_method = getattr(model, "stream", None)
+                if not callable(stream_method):
+                    raise TypeError(f"{candidate.info.label} does not support streaming.")
+                for chunk in stream_method(messages):
+                    emitted = True
+                    yield chunk, candidate.info, index
+                provider = candidate.info.provider.casefold()
+                self._provider_successes[provider] = self._provider_successes.get(provider, 0) + 1
+                return
+            except GeneratorExit:
+                raise
+            except Exception as exc:
+                if emitted or not is_capacity_error(exc):
+                    raise
+                failures.append(f"{candidate.info.label}: {type(exc).__name__}: {exc}")
+                self._record_failure(candidate, exc)
+        detail = "\n".join(failures[-10:])
+        raise ModelRoutingError(
+            "All configured model options are currently unavailable, cooling down, "
+            "or out of quota. Sovereign did not make a paid request. "
+            "Paid providers remain disabled unless explicitly opted in.\nProvider details:\n" + detail,
+            failures=failures, checkout_url=self.checkout_url,
+        )
+
     def invoke(self, messages, tools=None, start_index: int | None = None,
-               max_tokens: int | None = None, require_vision: bool = False):
+               max_tokens: int | None = None, require_vision: bool = False,
+               candidate_indices: list[int] | None = None):
         """Invoke an eligible model, preferring the manually selected model.
 
         Image requests are restricted to model IDs known to accept visual input;
@@ -381,6 +442,12 @@ class ModelRouter:
             )
         start_index = max(0, min(int(start_index), len(self.candidates) - 1))
         order = list(range(start_index, len(self.candidates))) + list(range(0, start_index))
+        if candidate_indices is not None:
+            allowed = {int(index) for index in candidate_indices
+                       if isinstance(index, int) and 0 <= index < len(self.candidates)}
+            order = [index for index in order if index in allowed]
+            if not order:
+                raise ModelRoutingError("No permitted model candidate is available for this request.")
         if require_vision:
             order = [index for index in order if _supports_vision(self.candidates[index])]
             if not order:

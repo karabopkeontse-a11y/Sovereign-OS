@@ -66,6 +66,23 @@ class TaskStore:
                     evidence_reference TEXT NOT NULL, created_at TEXT NOT NULL,
                     FOREIGN KEY(step_id) REFERENCES plan_steps(id)
                 );
+                CREATE TABLE IF NOT EXISTS approval_events (
+                    id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL,
+                    problem_id TEXT NOT NULL, step_id TEXT NOT NULL,
+                    decision TEXT NOT NULL, note TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+                    FOREIGN KEY(problem_id) REFERENCES problems(id),
+                    FOREIGN KEY(step_id) REFERENCES plan_steps(id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_approval_events_workspace
+                    ON approval_events(workspace_id, created_at);
+                CREATE TABLE IF NOT EXISTS agent_step_specs (
+                    step_id TEXT PRIMARY KEY, tool_name TEXT NOT NULL,
+                    input_json TEXT NOT NULL, verification_criterion TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(step_id) REFERENCES plan_steps(id)
+                );
                 CREATE TABLE IF NOT EXISTS memory_records (
                     id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, kind TEXT NOT NULL,
                     content TEXT NOT NULL, source TEXT NOT NULL, confidence REAL NOT NULL,
@@ -73,6 +90,122 @@ class TaskStore:
                     FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
                 );
             """)
+            self._migrate_plugin_registry(db)
+
+    def _migrate_plugin_registry(self, db) -> None:
+        """Add the versioned plugin registry without rewriting existing records."""
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                applied_at TEXT NOT NULL
+            )
+        """)
+
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS plugins (
+                plugin_id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                version TEXT NOT NULL,
+                manifest_json TEXT NOT NULL,
+                source_type TEXT NOT NULL
+                    CHECK(source_type IN ('builtin','local','git','cloud','external')),
+                source_uri TEXT,
+                install_path TEXT,
+                manifest_hash TEXT,
+                signature TEXT,
+                status TEXT NOT NULL DEFAULT 'registered'
+                    CHECK(status IN ('registered','enabled','disabled','error','uninstalled')),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
+
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS plugin_capabilities (
+                plugin_id TEXT NOT NULL,
+                capability_id TEXT NOT NULL,
+                version TEXT NOT NULL,
+                contract_json TEXT NOT NULL,
+                execution_target TEXT NOT NULL
+                    CHECK(execution_target IN ('local','cloud','either')),
+                risk_level TEXT NOT NULL
+                    CHECK(risk_level IN ('low','medium','high','critical')),
+                enabled INTEGER NOT NULL DEFAULT 0 CHECK(enabled IN (0,1)),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(plugin_id, capability_id),
+                FOREIGN KEY(plugin_id) REFERENCES plugins(plugin_id)
+            )
+        """)
+
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS workspace_metadata (
+                workspace_id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL
+                    CHECK(kind IN ('core','plugin','user','placeholder','legacy')),
+                status TEXT NOT NULL DEFAULT 'active'
+                    CHECK(status IN ('active','disabled','archived')),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
+            )
+        """)
+
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS workspace_plugins (
+                workspace_id TEXT NOT NULL,
+                plugin_id TEXT NOT NULL,
+                installed_version TEXT NOT NULL,
+                config_json TEXT NOT NULL DEFAULT '{}',
+                permissions_json TEXT NOT NULL DEFAULT '{}',
+                status TEXT NOT NULL DEFAULT 'disabled'
+                    CHECK(status IN ('enabled','disabled','error')),
+                installed_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(workspace_id, plugin_id),
+                FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+                FOREIGN KEY(plugin_id) REFERENCES plugins(plugin_id)
+            )
+        """)
+
+        db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_workspace_metadata_status
+            ON workspace_metadata(status, kind)
+        """)
+        db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_workspace_plugins_plugin
+            ON workspace_plugins(plugin_id, status)
+        """)
+
+        version = db.execute(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations"
+        ).fetchone()[0]
+
+        if version < 1:
+            now = _now()
+            existing = db.execute(
+                "SELECT id, name FROM workspaces"
+            ).fetchall()
+
+            for workspace_id, name in existing:
+                if name in ("General", "SovereignOS"):
+                    kind = "core"
+                elif name in ("Nikolai Creative Studio", "Yard Truths"):
+                    kind = "placeholder"
+                else:
+                    kind = "legacy"
+
+                db.execute("""
+                    INSERT OR IGNORE INTO workspace_metadata
+                    (workspace_id, kind, status, created_at, updated_at)
+                    VALUES (?, ?, 'active', ?, ?)
+                """, (workspace_id, kind, now, now))
+
+            db.execute("""
+                INSERT INTO schema_migrations(version, name, applied_at)
+                VALUES (1, 'plugin_registry_foundation', ?)
+            """, (now,))
 
     def create_workspace(self, name: str, purpose: str) -> Workspace:
         name = name.strip()
@@ -122,7 +255,7 @@ class TaskStore:
             "diagnosing": {"planned", "blocked", "failed", "cancelled"},
             "planned": {"awaiting_approval", "running", "blocked", "cancelled"},
             "awaiting_approval": {"planned", "running", "blocked", "cancelled"},
-            "running": {"verifying", "blocked", "failed", "cancelled"},
+            "running": {"verifying", "awaiting_approval", "blocked", "failed", "cancelled"},
             "verifying": {"running", "completed", "blocked", "failed", "cancelled"},
             "blocked": {"diagnosing", "planned", "cancelled"},
             "failed": {"diagnosing", "cancelled"},
@@ -197,6 +330,79 @@ class TaskStore:
             db.execute("INSERT INTO tool_runs VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                        (str(uuid4()), step_id, tool_name, input_summary, output_summary,
                         outcome, started_at, ended_at))
+
+
+
+    def add_step_spec(self, step_id: str, tool_name: str,
+                      input_json: str, verification_criterion: str) -> dict:
+        if not self.get_step(step_id):
+            raise ValueError("Plan step does not exist")
+        item = {
+            "step_id": step_id, "tool_name": tool_name,
+            "input_json": input_json,
+            "verification_criterion": (verification_criterion or "").strip()[:500],
+            "created_at": _now(),
+        }
+        with self._connection() as db:
+            db.execute("INSERT OR REPLACE INTO agent_step_specs VALUES (?, ?, ?, ?, ?)",
+                       tuple(item.values()))
+        return item
+
+    def get_step(self, step_id: str) -> PlanStep | None:
+        with self._connection() as db:
+            row = db.execute(
+                "SELECT s.* FROM plan_steps s WHERE s.id=?", (step_id,)
+            ).fetchone()
+        return PlanStep(**dict(row)) if row else None
+
+    def get_step_spec(self, step_id: str) -> dict | None:
+        with self._connection() as db:
+            row = db.execute("SELECT * FROM agent_step_specs WHERE step_id=?",
+                             (step_id,)).fetchone()
+        return dict(row) if row else None
+
+    def list_step_specs(self, problem_id: str) -> list[dict]:
+        with self._connection() as db:
+            rows = db.execute(
+                """SELECT sp.step_id, sp.tool_name,
+                          sp.verification_criterion, sp.created_at
+                   FROM agent_step_specs sp
+                   JOIN plan_steps s ON s.id=sp.step_id
+                   WHERE s.problem_id=? ORDER BY s.step_number""",
+                (problem_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def record_approval_event(self, workspace_id: str, problem_id: str,
+                              step_id: str, decision: str, note: str = "") -> dict:
+        if decision not in {"approved", "rejected", "cancelled"}:
+            raise ValueError("Approval decision must be approved or rejected")
+        problem = self.get_problem(problem_id)
+        if not problem or problem.workspace_id != workspace_id:
+            raise ValueError("Problem does not belong to this workspace")
+        if not any(step.id == step_id for step in self.list_steps(problem_id)):
+            raise ValueError("Step does not belong to this task")
+        event = {
+            "id": str(uuid4()), "workspace_id": workspace_id,
+            "problem_id": problem_id, "step_id": step_id,
+            "decision": decision, "note": (note or "").strip()[:1000],
+            "created_at": _now(),
+        }
+        with self._connection() as db:
+            db.execute("INSERT INTO approval_events VALUES (?, ?, ?, ?, ?, ?, ?)",
+                       tuple(event.values()))
+        return event
+
+    def list_approval_events(self, workspace_id: str, problem_id: str | None = None) -> list[dict]:
+        sql = "SELECT * FROM approval_events WHERE workspace_id=?"
+        params = [workspace_id]
+        if problem_id:
+            sql += " AND problem_id=?"
+            params.append(problem_id)
+        sql += " ORDER BY created_at, id"
+        with self._connection() as db:
+            rows = db.execute(sql, params).fetchall()
+        return [dict(row) for row in rows]
 
     def complete_problem(self, problem_id: str) -> Problem:
         steps = self.list_steps(problem_id)

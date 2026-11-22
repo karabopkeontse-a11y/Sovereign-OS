@@ -1,5 +1,6 @@
 ﻿"""REST API authentication, workspace isolation and IoT safety tests."""
 import tempfile
+import json
 import unittest
 from pathlib import Path
 try:
@@ -19,6 +20,16 @@ class FakeRouter:
         if provider != "Test" or model != "fake":
             raise ValueError("That model is not configured")
         return {"provider": provider, "model": model, "runtime": "cloud", "active": True}
+    def stream(self, messages, **kwargs):
+        class Chunk:
+            def __init__(self, content):
+                self.content = content
+        class Info:
+            provider = "Test"
+            model = "fake"
+            runtime = "cloud"
+        yield Chunk("First "), Info(), 0
+        yield Chunk("streamed answer."), Info(), 0
     def invoke(self, messages, **kwargs):
         class Reply:
             content = "Test response"
@@ -27,6 +38,73 @@ class FakeRouter:
             model = "fake"
             runtime = "cloud"
         return Reply(), Info(), 0
+
+class FakeQwenOnlyRouter(FakeRouter):
+    candidates = [type("Candidate", (), {
+        "info": type("Info", (), {"provider": "Groq", "model": "qwen/qwen3.8-27b", "runtime": "local"})()
+    })()]
+    def invoke(self, messages, **kwargs):
+        return FakePlanningRouter().invoke(messages, **kwargs)
+
+
+class FakePlanningRouter(FakeRouter):
+    def invoke(self, messages, **kwargs):
+        class Reply:
+            content = ('{"title":"Prepare a safe launch plan",'
+                       '"description":"Prepare the workspace launch materials and review before publication.",'
+                       '"steps":[{"action":"Research current launch requirements"},'
+                       '{"action":"Draft launch copy in the workspace"},'
+                       '{"action":"Publish the launch announcement"}]}')
+        class Info:
+            provider = "Test"
+            model = "planner"
+            runtime = "local"
+        return Reply(), Info(), 0
+
+
+class FakeToolPlanningRouter(FakeRouter):
+    def invoke(self, messages, **kwargs):
+        class Reply:
+            content = ('{"title":"Prepare a local workspace draft",'
+                       '"description":"Create a draft inside this workspace agent folder.",'
+                       '"steps":[{"action":"List current workspace files",'
+                       '"tool_name":"workspace.list_files","arguments":{},'
+                       '"verification_criterion":"The file list is returned from the scoped folder."},'
+                       '{"action":"Create the approved Markdown draft",'
+                       '"tool_name":"workspace.create_note",'
+                       '"arguments":{"filename":"approved-draft.md","content":"# Local draft\\nCreated by the approved agent tool."},'
+                       '"verification_criterion":"Read the new note back and confirm its content."}]}')
+        class Info:
+            provider = "Test"
+            model = "planner"
+            runtime = "local"
+        return Reply(), Info(), 0
+
+
+class FakeSequencingRouter(FakeRouter):
+    def invoke(self, messages, **kwargs):
+        class Reply:
+            content = ('{"title":"Respect ordered plan steps",'
+                       '"description":"Do not skip unsupported planning steps.",'
+                       '"steps":[{"action":"Review the project scope before acting"},'
+                       '{"action":"List workspace files","tool_name":"workspace.list_files",'
+                       '"arguments":{},"verification_criterion":"The scoped file list is returned."}]}')
+        class Info:
+            provider = "Test"
+            model = "sequencing-planner"
+            runtime = "local"
+        return Reply(), Info(), 0
+
+
+class FakeCloudOnlyRouter(FakePlanningRouter):
+    calls = 0
+    candidates = [type("Candidate", (), {
+        "info": type("Info", (), {"provider": "Test Cloud", "model": "safe-cloud-model", "runtime": "cloud"})()
+    })()]
+    def invoke(self, messages, **kwargs):
+        self.calls += 1
+        return super().invoke(messages, **kwargs)
+
 
 @unittest.skipIf(TestClient is None, "Install requirements-api.txt to run REST API tests")
 class SovereignAPITests(unittest.TestCase):
@@ -45,6 +123,33 @@ class SovereignAPITests(unittest.TestCase):
         )
         self.assertEqual(result.status_code, 401)
 
+    def test_voice_transcription_cloud_consent_header_passes_cors_preflight(self):
+        result = self.client.options(
+            "/api/v1/voice/transcribe",
+            headers={
+                "Origin": "http://localhost:8080",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": (
+                    "authorization,content-type,x-sovereign-language,"
+                    "x-sovereign-cloud-consent"
+                ),
+            },
+        )
+        self.assertEqual(result.status_code, 200)
+        self.assertIn(
+            "x-sovereign-cloud-consent",
+            result.headers.get("access-control-allow-headers", "").lower(),
+        )
+
+    def test_voice_transcription_requires_explicit_cloud_consent(self):
+        result = self.client.post(
+            "/api/v1/voice/transcribe",
+            content=b"audio",
+            headers={**self.headers, "Content-Type": "audio/webm"},
+        )
+        self.assertEqual(result.status_code, 403)
+        self.assertIn("explicit approval", result.json()["detail"])
+
     def test_voice_transcription_rejects_unsupported_media_type(self):
         result = self.client.post(
             "/api/v1/voice/transcribe",
@@ -57,7 +162,8 @@ class SovereignAPITests(unittest.TestCase):
         result = self.client.post(
             "/api/v1/voice/transcribe",
             content=b"",
-            headers={**self.headers, "Content-Type": "audio/webm"},
+            headers={**self.headers, "Content-Type": "audio/webm",
+                     "X-Sovereign-Cloud-Consent": "explicit-session"},
         )
         self.assertEqual(result.status_code, 422)
 
@@ -101,6 +207,42 @@ class SovereignAPITests(unittest.TestCase):
         self.assertEqual(own.status_code,200)
         self.assertEqual(len(own.json()["messages"]),2)
         self.assertEqual(other.status_code,404)
+    def test_chat_stream_requires_auth(self):
+        result = self.client.post(
+            "/api/v1/workspaces/test-workspace/chat/stream",
+            json={"message": "hello"},
+        )
+        self.assertEqual(result.status_code, 401)
+
+    def test_chat_stream_emits_deltas_and_persists_completed_turn(self):
+        workspaces = self.client.get("/api/v1/workspaces", headers=self.headers).json()["workspaces"]
+        workspace = next(item for item in workspaces if item["name"] == "SovereignOS")
+        result = self.client.post(
+            f"/api/v1/workspaces/{workspace['id']}/chat/stream",
+            headers=self.headers,
+            json={"message": "Give me a streamed answer", "voice_mode": True},
+        )
+        self.assertEqual(result.status_code, 200)
+        self.assertIn("event: start", result.text)
+        self.assertIn('event: delta', result.text)
+        self.assertIn('"text": "First "', result.text)
+        self.assertIn('"text": "streamed answer."', result.text)
+        self.assertIn("event: done", result.text)
+        self.assertNotIn("event: error", result.text)
+        events = [
+            json.loads(line.removeprefix("data: "))
+            for line in result.text.splitlines()
+            if line.startswith("data: ")
+        ]
+        conversation_id = next(item["conversation_id"] for item in events if "conversation_id" in item)
+        history = self.client.get(
+            f"/api/v1/workspaces/{workspace['id']}/conversations/{conversation_id}/messages",
+            headers=self.headers,
+        )
+        self.assertEqual(history.status_code, 200)
+        messages = history.json()["messages"]
+        self.assertEqual([item["role"] for item in messages], ["user", "assistant"])
+        self.assertEqual(messages[-1]["content"], "First streamed answer.")
     def test_model_health_comes_from_router(self):
         data=self.client.get("/api/v1/models/health",headers=self.headers).json()
         self.assertEqual(data["providers"][0]["provider"],"Test")
@@ -109,6 +251,7 @@ class SovereignAPITests(unittest.TestCase):
         self.assertEqual(ok.status_code,200)
         bad=self.client.post("/api/v1/models/select",headers=self.headers,json={"provider":"Other","model":"unknown"})
         self.assertEqual(bad.status_code,409)
+
     def test_iot_data_is_marked_simulated(self):
         data=self.client.get("/api/v1/iot/devices",headers=self.headers).json()
         self.assertTrue(data["simulation"])
@@ -125,6 +268,228 @@ class SovereignAPITests(unittest.TestCase):
         result=self.client.post("/api/v1/iot/commands",headers=self.headers,
                                 json={"command":"open_valve"})
         self.assertEqual(result.status_code,403)
+
+
+    def test_agent_plan_is_persisted_and_sensitive_steps_need_approval(self):
+        client = TestClient(create_app(Path(self.temp.name)/"planner.sqlite3",
+                                       router=FakePlanningRouter(), token="test-secret"))
+        workspaces = client.get("/api/v1/workspaces", headers=self.headers).json()["workspaces"]
+        workspace = next(w for w in workspaces if w["name"] == "Nikolai Creative Studio")
+        result = client.post("/api/v1/workspaces/"+workspace["id"]+"/agent/plan",
+                             headers=self.headers,
+                             json={"goal":"Prepare a safe launch plan for the new campaign."})
+        self.assertEqual(result.status_code, 200, result.text)
+        data = result.json()
+        self.assertFalse(data["execution_started"])
+        self.assertEqual(len(data["steps"]), 3)
+        self.assertEqual(data["steps"][0]["permission_level"], "read_only")
+        self.assertEqual(data["steps"][1]["status"], "awaiting_approval")
+        self.assertEqual(data["steps"][2]["permission_level"], "high_impact")
+        self.assertEqual(data["task"]["status"], "awaiting_approval")
+
+    def test_approval_queue_is_workspace_scoped_and_audited(self):
+        client = TestClient(create_app(Path(self.temp.name)/"approval.sqlite3",
+                                       router=FakePlanningRouter(), token="test-secret"))
+        workspaces = client.get("/api/v1/workspaces", headers=self.headers).json()["workspaces"]
+        workspace = next(w for w in workspaces if w["name"] == "Yard Truths")
+        created = client.post("/api/v1/workspaces/"+workspace["id"]+"/agent/plan",
+                              headers=self.headers,
+                              json={"goal":"Prepare a safe launch plan for the new campaign."})
+        self.assertEqual(created.status_code, 200, created.text)
+        pending = client.get("/api/v1/approvals?workspace_id="+workspace["id"],
+                             headers=self.headers).json()["approvals"]
+        self.assertEqual(len(pending), 2)
+        first = pending[0]
+        decision = client.post(
+            "/api/v1/workspaces/"+workspace["id"]+"/agent/tasks/"+first["problem_id"]+
+            "/steps/"+first["step_id"]+"/decision",
+            headers=self.headers, json={"approved":True,"note":"Reviewed by owner."})
+        self.assertEqual(decision.status_code, 200, decision.text)
+        self.assertFalse(decision.json()["execution_started"])
+        tasks = client.get("/api/v1/workspaces/"+workspace["id"]+"/agent/tasks",
+                           headers=self.headers).json()["tasks"]
+        events = tasks[0]["approval_events"]
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["decision"], "approved")
+        remaining = client.get("/api/v1/approvals?workspace_id="+workspace["id"],
+                               headers=self.headers).json()["approvals"]
+        self.assertEqual(len(remaining), 1)
+
+    def test_agent_task_cannot_be_read_from_another_workspace(self):
+        client = TestClient(create_app(Path(self.temp.name)/"scope.sqlite3",
+                                       router=FakePlanningRouter(), token="test-secret"))
+        workspaces = client.get("/api/v1/workspaces", headers=self.headers).json()["workspaces"]
+        a = next(w for w in workspaces if w["name"] == "Nikolai Creative Studio")
+        b = next(w for w in workspaces if w["name"] == "Yard Truths")
+        created = client.post("/api/v1/workspaces/"+a["id"]+"/agent/plan",
+                              headers=self.headers,
+                              json={"goal":"Prepare a safe launch plan for the new campaign."})
+        problem_id = created.json()["task"]["id"]
+        other = client.get("/api/v1/workspaces/"+b["id"]+"/agent/tasks/"+problem_id,
+                           headers=self.headers)
+        self.assertEqual(other.status_code, 404)
+
+
+    def test_agent_planner_accepts_configured_qwen_model(self):
+        client = TestClient(create_app(Path(self.temp.name)/"qwen.sqlite3",
+                                       router=FakeQwenOnlyRouter(), token="test-secret"))
+        workspaces = client.get("/api/v1/workspaces", headers=self.headers).json()["workspaces"]
+        workspace = next(w for w in workspaces if w["name"] == "SovereignOS")
+        result = client.post("/api/v1/workspaces/"+workspace["id"]+"/agent/plan",
+                             headers=self.headers,
+                             json={"goal":"Prepare a safe plan for a project milestone."})
+        self.assertEqual(result.status_code, 200, result.text)
+        self.assertEqual(result.json()["task"]["status"], "awaiting_approval")
+
+    def test_voice_status_is_authenticated_and_reports_dependencies(self):
+        denied = self.client.get("/api/v1/voice/status")
+        self.assertEqual(denied.status_code, 401)
+        allowed = self.client.get("/api/v1/voice/status", headers=self.headers)
+        self.assertEqual(allowed.status_code, 200)
+        self.assertIn("available", allowed.json())
+        self.assertIn("ffmpeg_available", allowed.json())
+
+
+    def test_agent_tools_run_only_in_workspace_and_writes_require_approval(self):
+        client = TestClient(create_app(Path(self.temp.name)/"tools.sqlite3",
+                                       router=FakeToolPlanningRouter(), token="test-secret"))
+        workspaces = client.get("/api/v1/workspaces", headers=self.headers).json()["workspaces"]
+        workspace = next(w for w in workspaces if w["name"] == "SovereignOS")
+        created = client.post("/api/v1/workspaces/"+workspace["id"]+"/agent/plan",
+                              headers=self.headers,
+                              json={"goal":"Create and verify a local Markdown draft in this workspace."})
+        self.assertEqual(created.status_code, 200, created.text)
+        task_id = created.json()["task"]["id"]
+        first = client.post("/api/v1/workspaces/"+workspace["id"]+"/agent/tasks/"+task_id+"/run-safe",
+                            headers=self.headers, json={})
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertEqual(first.json()["executed_count"], 1)
+        self.assertTrue(first.json()["verified"])
+        self.assertTrue(first.json()["stopped_at_approval"])
+        self.assertEqual(first.json()["task_status"], "awaiting_approval")
+        self.assertEqual(first.json()["results"][0]["tool_result"]["tool"], "workspace.list_files")
+        blocked = client.post("/api/v1/workspaces/"+workspace["id"]+"/agent/tasks/"+task_id+"/execute-next",
+                              headers=self.headers, json={})
+        self.assertEqual(blocked.status_code, 409)
+        pending = client.get("/api/v1/approvals?workspace_id="+workspace["id"],
+                             headers=self.headers).json()["approvals"]
+        self.assertEqual(len(pending), 1)
+        unapproved_file = Path(self.temp.name) / "agent_workspace" / workspace["id"] / "approved-draft.md"
+        self.assertFalse(unapproved_file.exists())
+        self.assertEqual(pending[0]["tool_name"], "workspace.create_note")
+        self.assertEqual(pending[0]["requested_details"]["filename"], "approved-draft.md")
+        self.assertIn("Created by the approved agent tool",
+                      pending[0]["requested_details"]["content"])
+        approval = pending[0]
+        decision = client.post(
+            "/api/v1/workspaces/"+workspace["id"]+"/agent/tasks/"+task_id+
+            "/steps/"+approval["step_id"]+"/decision",
+            headers=self.headers, json={"approved":True,"note":"Approved local draft creation."})
+        self.assertEqual(decision.status_code, 200, decision.text)
+        second = client.post("/api/v1/workspaces/"+workspace["id"]+"/agent/tasks/"+task_id+"/execute-next",
+                             headers=self.headers, json={})
+        self.assertEqual(second.status_code, 200, second.text)
+        self.assertTrue(second.json()["verified"])
+        self.assertEqual(second.json()["task_status"], "completed")
+        created_file = Path(self.temp.name) / "agent_workspace" / workspace["id"] / "approved-draft.md"
+        self.assertTrue(created_file.is_file())
+        self.assertIn("Created by the approved agent tool", created_file.read_text(encoding="utf-8"))
+
+
+    def test_run_safe_does_not_skip_unregistered_step_ahead_of_registered_tool(self):
+        client = TestClient(create_app(Path(self.temp.name)/"sequence.sqlite3",
+                                       router=FakeSequencingRouter(), token="test-secret"))
+        workspaces = client.get("/api/v1/workspaces", headers=self.headers).json()["workspaces"]
+        workspace = next(w for w in workspaces if w["name"] == "SovereignOS")
+        created = client.post(
+            "/api/v1/workspaces/"+workspace["id"]+"/agent/plan",
+            headers=self.headers,
+            json={"goal":"Review the scope and then inspect the workspace safely."},
+        )
+        self.assertEqual(created.status_code, 200, created.text)
+        steps = created.json()["steps"]
+        self.assertEqual(len(steps), 2)
+        self.assertEqual(steps[0]["action"], "Review the project scope before acting")
+        self.assertEqual(steps[1]["action"], "List workspace files")
+
+        result = client.post(
+            "/api/v1/workspaces/"+workspace["id"]+"/agent/tasks/"+
+            created.json()["task"]["id"]+"/run-safe",
+            headers=self.headers, json={},
+        )
+        self.assertEqual(result.status_code, 200, result.text)
+        self.assertEqual(result.json()["executed_count"], 0)
+        self.assertFalse(result.json()["stopped_at_approval"])
+        self.assertIn("next plan step has no registered tool", result.json()["stop_reason"])
+        self.assertEqual(result.json()["task_status"], "planned")
+        self.assertEqual(result.json()["results"], [])
+
+
+    def test_rejecting_a_step_blocks_task_and_cancels_other_pending_steps(self):
+        client = TestClient(create_app(Path(self.temp.name)/"reject.sqlite3",
+                                       router=FakePlanningRouter(), token="test-secret"))
+        workspaces = client.get("/api/v1/workspaces", headers=self.headers).json()["workspaces"]
+        workspace = next(w for w in workspaces if w["name"] == "Nikolai Creative Studio")
+        created = client.post("/api/v1/workspaces/"+workspace["id"]+"/agent/plan",
+                              headers=self.headers,
+                              json={"goal":"Prepare a safe launch plan for the new campaign."})
+        task_id = created.json()["task"]["id"]
+        pending = client.get("/api/v1/approvals?workspace_id="+workspace["id"],
+                             headers=self.headers).json()["approvals"]
+        self.assertEqual(len(pending), 2)
+        first = pending[0]
+        rejected = client.post(
+            "/api/v1/workspaces/"+workspace["id"]+"/agent/tasks/"+task_id+
+            "/steps/"+first["step_id"]+"/decision",
+            headers=self.headers, json={"approved":False,"note":"Not approved."})
+        self.assertEqual(rejected.status_code, 200, rejected.text)
+        self.assertEqual(rejected.json()["task_status"], "blocked")
+        remaining = client.get("/api/v1/approvals?workspace_id="+workspace["id"],
+                               headers=self.headers).json()["approvals"]
+        self.assertEqual(remaining, [])
+
+
+    def test_agent_task_can_be_cancelled_and_pending_approvals_are_closed(self):
+        client = TestClient(create_app(Path(self.temp.name)/"cancel.sqlite3",
+                                       router=FakeToolPlanningRouter(), token="test-secret"))
+        workspaces = client.get("/api/v1/workspaces", headers=self.headers).json()["workspaces"]
+        workspace = next(w for w in workspaces if w["name"] == "SovereignOS")
+        created = client.post("/api/v1/workspaces/"+workspace["id"]+"/agent/plan",
+                              headers=self.headers,
+                              json={"goal":"Create and verify a local Markdown draft in this workspace."})
+        task_id = created.json()["task"]["id"]
+        cancelled = client.post("/api/v1/workspaces/"+workspace["id"]+"/agent/tasks/"+task_id+"/cancel",
+                                headers=self.headers)
+        self.assertEqual(cancelled.status_code, 200, cancelled.text)
+        self.assertEqual(cancelled.json()["status"], "cancelled")
+        pending = client.get("/api/v1/approvals?workspace_id="+workspace["id"],
+                             headers=self.headers).json()["approvals"]
+        self.assertEqual(pending, [])
+        detail = client.get("/api/v1/workspaces/"+workspace["id"]+"/agent/tasks/"+task_id,
+                            headers=self.headers).json()
+        self.assertEqual(len(detail["approval_events"]), 1)
+        self.assertEqual(detail["approval_events"][0]["decision"], "cancelled")
+        execute = client.post("/api/v1/workspaces/"+workspace["id"]+"/agent/tasks/"+task_id+"/execute-next",
+                              headers=self.headers)
+        self.assertEqual(execute.status_code, 409)
+
+
+    def test_agent_planner_requires_server_verified_cloud_consent(self):
+        router = FakeCloudOnlyRouter()
+        client = TestClient(create_app(Path(self.temp.name)/"cloud-consent.sqlite3",
+                                       router=router, token="test-secret"))
+        workspaces = client.get("/api/v1/workspaces", headers=self.headers).json()["workspaces"]
+        workspace = next(w for w in workspaces if w["name"] == "SovereignOS")
+        path = "/api/v1/workspaces/"+workspace["id"]+"/agent/plan"
+        denied = client.post(path, headers=self.headers,
+                             json={"goal":"Prepare a safe plan for a project milestone."})
+        self.assertEqual(denied.status_code, 403)
+        self.assertEqual(router.calls, 0)
+        allowed = client.post(path, headers=self.headers,
+                              json={"goal":"Prepare a safe plan for a project milestone.",
+                                    "allow_cloud_processing":True})
+        self.assertEqual(allowed.status_code, 200, allowed.text)
+        self.assertEqual(router.calls, 1)
 
 if __name__ == "__main__":
     unittest.main()

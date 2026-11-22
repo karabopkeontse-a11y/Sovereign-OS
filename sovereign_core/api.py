@@ -2,18 +2,19 @@
 from __future__ import annotations
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-import asyncio, io
+import asyncio, io, json
 import os, secrets, sqlite3, shutil, subprocess, zipfile
 import time
 from pathlib import Path
 from uuid import uuid4
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 from dotenv import load_dotenv
 from .workspaces import WorkspaceService
 from .specialists import specialist_for, specialist_prompt
+from .agent_tools import TOOLS as AGENT_TOOLS, execute_workspace_tool, validate_tool_input, verify_workspace_tool, workspace_root
 
 # Load local provider credentials from the project root without overriding
 # environment variables explicitly supplied by the launching process.
@@ -23,6 +24,8 @@ load_dotenv(PROJECT_ROOT / ".env.local", override=False)
 
 def now():
     return datetime.now(timezone.utc).isoformat()
+
+
 
 class VoiceInput(BaseModel):
     text: str = Field(min_length=1, max_length=3000)
@@ -49,6 +52,16 @@ class GroupChatInput(BaseModel):
     message: str = Field(min_length=1, max_length=12000)
     conversation_id: str | None = None
     specialist_ids: list[str] = Field(min_length=2, max_length=4)
+
+class AgentPlanInput(BaseModel):
+    goal: str = Field(min_length=10, max_length=4000)
+    allow_cloud_processing: bool = False
+
+
+class AgentDecisionInput(BaseModel):
+    approved: bool
+    note: str = Field(default="", max_length=1000)
+
 
 class ModelSelectInput(BaseModel):
     provider: str = Field(min_length=1, max_length=80)
@@ -167,6 +180,145 @@ class SovereignAPI:
                 "model_latency_ms": model_latency_ms}
 
 
+    def stream_chat(self, workspace_id, payload):
+        """Stream one workspace-scoped assistant turn as server-sent events."""
+        def events():
+            try:
+                workspace = self.workspaces.get_workspace(workspace_id)
+            except ValueError:
+                yield "event: error\ndata: " + json.dumps({"message": "Workspace not found"}) + "\n\n"
+                return
+            if payload.images:
+                yield "event: error\ndata: " + json.dumps({"message": "Image attachments are not supported by streaming yet."}) + "\n\n"
+                return
+
+            db = self.connection()
+            try:
+                conversation_id = payload.conversation_id
+                if conversation_id:
+                    owner = db.execute(
+                        "SELECT id FROM api_conversations WHERE id=? AND workspace_id=?",
+                        (conversation_id, workspace.id),
+                    ).fetchone()
+                    if owner is None:
+                        yield "event: error\ndata: " + json.dumps({"message": "Conversation not found in this workspace"}) + "\n\n"
+                        return
+                else:
+                    conversation_id = str(uuid4())
+                    stamp = now()
+                    db.execute("INSERT INTO api_conversations VALUES (?, ?, ?, ?, ?)",
+                               (conversation_id, workspace.id, payload.message[:72], stamp, stamp))
+                    db.commit()
+                prior = db.execute(
+                    "SELECT role, content FROM api_messages WHERE conversation_id=? "
+                    "ORDER BY created_at DESC LIMIT " + ("6" if payload.voice_mode else "12"),
+                    (conversation_id,),
+                ).fetchall()
+            finally:
+                db.close()
+
+            try:
+                memories = self.workspaces.search(
+                    workspace.id, payload.message, limit=2 if payload.voice_mode else 5
+                )
+                memory_context = "\n".join("- " + item.content for item in memories)
+                assistant_name = (
+                    "Thothi, the customer-facing SmartFlow BW assistant powered by SovereignOS"
+                    if workspace.name == "SmartFlow BW" else "SovereignOS"
+                )
+                system = (
+                    "You are " + assistant_name + " in the " + workspace.name + " workspace. Purpose: "
+                    + workspace.purpose + ". Use only this workspace context. Never claim to execute "
+                    "external actions. Financial, publishing, destructive and physical-device actions "
+                    "require human approval. Relevant memories:\n" + (memory_context or "(none)")
+                )
+                if payload.voice_mode:
+                    system += (
+                        " For voice conversations, optimise for a fast live exchange. Give the direct "
+                        "answer first in one or two short sentences, then pause for the user. Avoid long "
+                        "preambles, Markdown, tables and decorative symbols. Ask at most one concise "
+                        "follow-up question when essential."
+                    )
+                from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
+                messages = [SystemMessage(content=system)]
+                for item in reversed(prior):
+                    messages.append(
+                        HumanMessage(content=item["content"]) if item["role"] == "user"
+                        else AIMessage(content=item["content"])
+                    )
+                messages.append(HumanMessage(content=payload.message))
+                router = self.get_router()
+                started = time.perf_counter()
+                reply_parts = []
+                info = None
+                used_index = None
+                yield "event: start\ndata: " + json.dumps({
+                    "conversation_id": conversation_id, "workspace_id": workspace.id
+                }) + "\n\n"
+
+                def text_from_chunk(chunk):
+                    value = getattr(chunk, "content", chunk)
+                    if isinstance(value, str):
+                        return value
+                    if isinstance(value, list):
+                        return "".join(
+                            part.get("text", "") for part in value
+                            if isinstance(part, dict) and part.get("type") in {"text", "text_delta"}
+                        )
+                    return ""
+
+                for chunk, chunk_info, chunk_index in router.stream(
+                    messages, max_tokens=192 if payload.voice_mode else None
+                ):
+                    if info is None:
+                        info, used_index = chunk_info, chunk_index
+                    delta = text_from_chunk(chunk)
+                    if not delta:
+                        continue
+                    reply_parts.append(delta)
+                    yield "event: delta\ndata: " + json.dumps(
+                        {"text": delta}, ensure_ascii=False
+                    ) + "\n\n"
+
+                reply = "".join(reply_parts)
+                if info is None or not reply:
+                    raise RuntimeError("The model stream completed without any text output.")
+                latency_ms = round((time.perf_counter() - started) * 1000)
+                db = self.connection()
+                try:
+                    stamp = now()
+                    db.execute("INSERT INTO api_messages VALUES (?, ?, ?, ?, ?, ?, ?)",
+                               (str(uuid4()), conversation_id, "user", payload.message, None, None, stamp))
+                    db.execute("INSERT INTO api_messages VALUES (?, ?, ?, ?, ?, ?, ?)",
+                               (str(uuid4()), conversation_id, "assistant", reply,
+                                info.provider, info.model, stamp))
+                    db.execute("UPDATE api_conversations SET updated_at=? WHERE id=?",
+                               (stamp, conversation_id))
+                    db.commit()
+                finally:
+                    db.close()
+                health = router.health_snapshot() if hasattr(router, "health_snapshot") else []
+                selected = next((item.get("model") for item in health if item.get("active")), None)
+                yield "event: done\ndata: " + json.dumps({
+                    "conversation_id": conversation_id,
+                    "workspace_id": workspace.id,
+                    "provider": info.provider,
+                    "model": info.model,
+                    "runtime": info.runtime,
+                    "fallback_used": used_index != getattr(router, "active_index", used_index),
+                    "selected_model": selected,
+                    "model_latency_ms": latency_ms,
+                }) + "\n\n"
+            except GeneratorExit:
+                raise
+            except Exception as exc:
+                yield "event: error\ndata: " + json.dumps({
+                    "message": "Model stream failed: " + type(exc).__name__ + ": " + str(exc)
+                }) + "\n\n"
+
+        return events()
+
+
 def create_libreoffice_test_document(workspace_root: Path):
     """Create one fixed, harmless ODT inside the dedicated agent workspace."""
     workspace_root = Path(workspace_root).resolve()
@@ -236,7 +388,7 @@ def create_app(db_path=None, router=None, token=None):
     origins = [x.strip() for x in os.getenv("SOVEREIGN_API_CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173,http://localhost:8080,http://127.0.0.1:8080").split(",") if x.strip()]
     if origins:
         app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=False,
-                           allow_methods=["GET", "POST"], allow_headers=["Authorization", "Content-Type"])
+                           allow_methods=["GET", "POST"], allow_headers=["Authorization", "Content-Type", "X-Sovereign-Language", "X-Sovereign-Cloud-Consent"])
     def authorize(authorization: str | None = Header(default=None)):
         if not expected_token:
             raise HTTPException(503, "API locked: configure SOVEREIGN_API_TOKEN")
@@ -261,6 +413,34 @@ def create_app(db_path=None, router=None, token=None):
         return {"api_url": "http://127.0.0.1:" + str(int(os.getenv("SOVEREIGN_API_PORT", "8765"))),
                 "token": expected_token, "mode": "local-desktop"}
 
+
+    @app.get("/api/v1/voice/status", dependencies=[Depends(authorize)])
+    def voice_status():
+        ffmpeg_available = shutil.which("ffmpeg") is not None
+        try:
+            import speech_recognition  # noqa: F401
+            recognition_available = True
+        except ImportError:
+            recognition_available = False
+        try:
+            import edge_tts  # noqa: F401
+            speech_output_available = True
+        except ImportError:
+            speech_output_available = False
+        available = ffmpeg_available and recognition_available
+        if not ffmpeg_available:
+            reason = "FFmpeg is not installed or is not on PATH. Voice capture cannot be converted for transcription."
+        elif not recognition_available:
+            reason = "The SpeechRecognition package is not installed in the API environment."
+        elif not speech_output_available:
+            reason = "Voice transcription is ready. Browser speech output will be used because Edge TTS is unavailable."
+        else:
+            reason = "Voice dependencies are available. Google Speech Recognition requires an internet connection."
+        return {"available": available, "ffmpeg_available": ffmpeg_available,
+                "recognition_available": recognition_available,
+                "speech_output_available": speech_output_available,
+                "provider": "Google Speech Recognition with browser voice or Edge TTS fallback",
+                "reason": reason}
 
     @app.post("/api/v1/voice/synthesize", dependencies=[Depends(authorize)])
     async def synthesize_voice(payload: VoiceInput):
@@ -319,6 +499,12 @@ def create_app(db_path=None, router=None, token=None):
         if media_type not in allowed_types:
             raise HTTPException(415, "Unsupported audio format.")
 
+        if request.headers.get("x-sovereign-cloud-consent") != "explicit-session":
+            raise HTTPException(
+                403,
+                "Cloud speech recognition requires explicit approval in the SovereignOS call screen.",
+            )
+
         declared_length = request.headers.get("content-length")
         if declared_length:
             try:
@@ -376,12 +562,16 @@ def create_app(db_path=None, router=None, token=None):
         except Exception:
             raise HTTPException(422, "The converted audio could not be read.")
 
+        language = request.headers.get("x-sovereign-language", "en-GB").strip()
+        allowed_languages = {"en-GB", "en-US", "en-ZA", "tn-BW"}
+        if language not in allowed_languages:
+            raise HTTPException(400, "Unsupported voice recognition language.")
         try:
             transcript = await asyncio.wait_for(
                 asyncio.to_thread(
                     recognizer.recognize_google,
                     audio_data,
-                    language="en-GB",
+                    language=language,
                 ),
                 timeout=15,
             )
@@ -444,13 +634,20 @@ def create_app(db_path=None, router=None, token=None):
             owner = db.execute("SELECT id FROM api_conversations WHERE id=? AND workspace_id=?", (conversation_id, workspace_id)).fetchone()
             if owner is None:
                 raise HTTPException(404, "Conversation not found in this workspace")
-            rows = db.execute("SELECT role, content, provider, model, created_at FROM api_messages WHERE conversation_id=? ORDER BY created_at, id", (conversation_id,)).fetchall()
+            rows = db.execute("SELECT role, content, provider, model, created_at FROM api_messages WHERE conversation_id=? ORDER BY created_at, rowid", (conversation_id,)).fetchall()
             return {"messages": [dict(row) for row in rows]}
         finally:
             db.close()
     @app.post("/api/v1/workspaces/{workspace_id}/chat", dependencies=[Depends(authorize)])
     def chat(workspace_id: str, payload: ChatInput):
         return state.chat(workspace_id, payload)
+    @app.post("/api/v1/workspaces/{workspace_id}/chat/stream", dependencies=[Depends(authorize)])
+    def chat_stream(workspace_id: str, payload: ChatInput):
+        return StreamingResponse(
+            state.stream_chat(workspace_id, payload),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
     @app.get("/api/v1/models/specialists", dependencies=[Depends(authorize)])
     def model_specialists():
         router_instance = state.get_router()
@@ -562,9 +759,447 @@ def create_app(db_path=None, router=None, token=None):
         if device_id not in samples:
             raise HTTPException(404, "Device not found")
         return {"device_id": device_id, "simulation": True, **samples[device_id]}
+    @app.post("/api/v1/workspaces/{workspace_id}/agent/plan", dependencies=[Depends(authorize)])
+    def create_agent_plan(workspace_id: str, payload: AgentPlanInput):
+        try:
+            workspace = state.workspaces.get_workspace(workspace_id)
+        except ValueError:
+            raise HTTPException(404, "Workspace not found")
+        try:
+            from langchain_core.messages import HumanMessage, SystemMessage
+            planning_prompt = (
+                "You are the planning component of SovereignOS. Convert the user's goal into a "
+                "practical, ordered plan. Return ONLY valid JSON with keys title, description, steps. "
+                "title must be concise. description must restate the goal. steps must contain 2 to 8 "
+                "objects with action, tool_name, arguments and verification_criterion. tool_name may be null. "
+                "The ONLY available tools are workspace.list_files (arguments: {}), workspace.read_file "
+                "(arguments: {\"path\":\"relative/path.md\"}), and workspace.create_note "
+                "(arguments: {\"filename\":\"draft.md\",\"content\":\"draft text\"}). Use list_files "
+                "or read_file only inside the selected workspace agent folder. Use create_note only to create "
+                "a new Markdown draft in that folder; it requires approval and never overwrites. Set tool_name "
+                "to null when no listed tool fits. Never invent a path, shell command, code, script, network "
+                "request, publishing action, payment, transfer, deletion or physical control. Include "
+                "verification_criterion for every tool step. The server assigns permissions independently."
+            )
+            planner_router = state.get_router()
+            candidate_indices = None
+            if hasattr(planner_router, "candidates") and not payload.allow_cloud_processing:
+                # Provider-neutral privacy gate: any configured local model may plan.
+                # Cloud models require explicit session consent, regardless of provider.
+                candidate_indices = [
+                    index for index, candidate in enumerate(planner_router.candidates)
+                    if candidate.info.runtime == "local"
+                ]
+                if not candidate_indices:
+                    raise HTTPException(
+                        403,
+                        "No local planner is available. Explicit cloud-processing consent is required before a cloud model can receive this goal."
+                    )
+            response, info, used_index = planner_router.invoke(
+                [SystemMessage(content=planning_prompt),
+                 HumanMessage(content="Workspace: " + workspace.name + "\nGoal: " + payload.goal)],
+                max_tokens=900,
+                candidate_indices=candidate_indices,
+            )
+            raw = response.content if hasattr(response, "content") else str(response)
+            if isinstance(raw, list):
+                raw = "\n".join(str(item.get("text", "")) if isinstance(item, dict) else str(item)
+                                 for item in raw)
+            raw = str(raw).strip()
+            if raw.startswith("```"):
+                raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+                if raw[:4].casefold() == "json":
+                    raw = raw[4:].strip()
+            plan = json.loads(raw)
+            if not isinstance(plan, dict):
+                raise ValueError("The planner response must be a JSON object.")
+            title_value = plan.get("title")
+            description_value = plan.get("description", payload.goal)
+            if not isinstance(title_value, str) or not isinstance(description_value, str):
+                raise ValueError("The planner returned invalid task metadata.")
+            title = title_value.strip()[:120]
+            description = description_value.strip()[:2000]
+            proposed = plan.get("steps")
+            if not title or not isinstance(proposed, list) or not 2 <= len(proposed) <= 8:
+                raise ValueError("The planner returned an incomplete plan.")
+            actions = []
+            for item in proposed:
+                if not isinstance(item, dict):
+                    raise ValueError("Every planned step must be a structured object.")
+                action_value = item.get("action")
+                if not isinstance(action_value, str):
+                    raise ValueError("The planner returned a step without a valid action.")
+                action = action_value.strip()
+                if not action or len(action) > 500:
+                    raise ValueError("The planner returned an invalid step.")
+                tool_name = item.get("tool_name")
+                arguments = item.get("arguments", {})
+                criterion = item.get("verification_criterion", "")
+                if not isinstance(criterion, str) or len(criterion) > 500:
+                    raise ValueError("The planner returned an invalid verification criterion.")
+                if tool_name is not None:
+                    if not isinstance(tool_name, str):
+                        raise ValueError("The planner returned an invalid tool name.")
+                    arguments = validate_tool_input(tool_name, arguments)
+                    permission = AGENT_TOOLS[tool_name]
+                    if not criterion.strip():
+                        criterion = "Verify the registered workspace tool completed within its scope."
+                else:
+                    if arguments not in ({}, None):
+                        raise ValueError("A step without a registered tool cannot contain tool arguments.")
+                    lowered = action.casefold()
+                    sensitive = (
+                        "delete", "remove", "publish", "send ", "share", "upload",
+                        "transfer", "pay ", "purchase", "buy ", "submit", "deploy",
+                        "execute", "unlock", "open valve", "control device", "email ",
+                        "post ", "external", "irreversible",
+                    )
+                    read_only = (
+                        "research", "read ", "list ", "search", "summarize", "summarise",
+                        "analyze", "analyse", "inspect", "review", "compare", "check ",
+                        "verify", "calculate", "identify", "map ", "outline",
+                    )
+                    if any(term in lowered for term in sensitive):
+                        permission = "high_impact"
+                    elif lowered.startswith(read_only):
+                        permission = "read_only"
+                    else:
+                        permission = "external_effect"
+                    arguments = {}
+                actions.append((action, permission, tool_name, arguments, criterion))
+            tasks = state.workspaces.tasks
+            problem = tasks.create_problem(workspace.id, title, description)
+            tasks.set_problem_status(problem.id, "diagnosing")
+            steps = []
+            for index, (action, permission, tool_name, arguments, criterion) in enumerate(actions, 1):
+                step = tasks.add_plan_step(problem.id, index, action, permission)
+                if tool_name:
+                    tasks.add_step_spec(step.id, tool_name,
+                                        json.dumps(arguments, ensure_ascii=False),
+                                        criterion)
+                steps.append(step)
+            tasks.set_problem_status(problem.id, "planned")
+            if any(step.status == "awaiting_approval" for step in steps):
+                tasks.set_problem_status(problem.id, "awaiting_approval")
+            return {"task": tasks.get_problem(problem.id).__dict__,
+                    "steps": [step.__dict__ for step in steps],
+                    "planner": {"provider": info.provider, "model": info.model},
+                    "execution_started": False,
+                    "note": "Plan saved. No tools or external actions have been executed."}
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(503, "Could not create a validated agent plan: " + type(exc).__name__ + ": " + str(exc))
+
+    @app.get("/api/v1/workspaces/{workspace_id}/agent/tasks", dependencies=[Depends(authorize)])
+    def list_agent_tasks(workspace_id: str):
+        try:
+            workspace = state.workspaces.get_workspace(workspace_id)
+        except ValueError:
+            raise HTTPException(404, "Workspace not found")
+        tasks = state.workspaces.tasks
+        result = []
+        for problem in tasks.list_problems(workspace.id):
+            result.append({"task": problem.__dict__,
+                           "steps": [step.__dict__ for step in tasks.list_steps(problem.id)],
+                           "tool_specs": tasks.list_step_specs(problem.id),
+                           "approval_events": tasks.list_approval_events(workspace.id, problem.id)})
+        return {"tasks": result}
+
+    @app.get("/api/v1/workspaces/{workspace_id}/agent/tasks/{problem_id}", dependencies=[Depends(authorize)])
+    def get_agent_task(workspace_id: str, problem_id: str):
+        try:
+            workspace = state.workspaces.get_workspace(workspace_id)
+        except ValueError:
+            raise HTTPException(404, "Workspace not found")
+        problem = state.workspaces.tasks.get_problem(problem_id)
+        if not problem or problem.workspace_id != workspace.id:
+            raise HTTPException(404, "Task not found in this workspace")
+        tasks = state.workspaces.tasks
+        return {"task": problem.__dict__,
+                "steps": [step.__dict__ for step in tasks.list_steps(problem.id)],
+                "tool_specs": tasks.list_step_specs(problem.id),
+                "approval_events": tasks.list_approval_events(workspace.id, problem.id)}
+
+    @app.post("/api/v1/workspaces/{workspace_id}/agent/tasks/{problem_id}/execute-next", dependencies=[Depends(authorize)])
+    def execute_next_agent_step(workspace_id: str, problem_id: str):
+        try:
+            workspace = state.workspaces.get_workspace(workspace_id)
+        except ValueError:
+            raise HTTPException(404, "Workspace not found")
+        tasks = state.workspaces.tasks
+        problem = tasks.get_problem(problem_id)
+        if not problem or problem.workspace_id != workspace.id:
+            raise HTTPException(404, "Task not found in this workspace")
+        if problem.status in {"blocked", "failed", "completed", "cancelled"}:
+            raise HTTPException(409, "This task is not in an executable state.")
+        selected = None
+        spec = None
+        for candidate in tasks.list_steps(problem.id):
+            candidate_spec = tasks.get_step_spec(candidate.id)
+            if candidate_spec and candidate.status in {"planned", "approved"}:
+                selected, spec = candidate, candidate_spec
+                break
+        if selected is None or spec is None:
+            raise HTTPException(409, "No registered tool step is ready. Review pending approvals or add a supported tool step.")
+        if selected.permission_level != "read_only" and selected.status != "approved":
+            raise HTTPException(403, "This tool step requires explicit approval before execution.")
+        started_at = None
+        started_clock = None
+        run_recorded = False
+        arguments = {}
+        input_summary = "{}"
+        try:
+            arguments = json.loads(spec["input_json"])
+            input_summary = json.dumps({
+                key: (f"[{len(value)} characters]" if key == "content" and isinstance(value, str) else value)
+                for key, value in arguments.items()
+            }, ensure_ascii=False)
+            root = workspace_root(state.db_path, workspace.id)
+            if problem.status in {"planned", "awaiting_approval"}:
+                tasks.set_problem_status(problem.id, "running")
+            tasks.update_step_status(selected.id, "running")
+            started_at = now()
+            started_clock = time.perf_counter()
+            result = execute_workspace_tool(spec["tool_name"], arguments, root)
+            passed, criterion, evidence = verify_workspace_tool(
+                spec["tool_name"], arguments, result, root
+            )
+            tasks.update_step_status(selected.id, "verifying")
+            tasks.record_tool_run(
+                selected.id, spec["tool_name"], input_summary,
+                (f"Listed {result.get('count')} workspace files" if spec["tool_name"] == "workspace.list_files"
+                 else f"Read {result.get('path')} ({result.get('bytes')} bytes)" if spec["tool_name"] == "workspace.read_file"
+                 else f"Created {result.get('path')} ({result.get('bytes')} bytes)"),
+                "success" if passed else "verification_failed",
+                started_at, now(),
+            )
+            run_recorded = True
+            tasks.record_verification(
+                selected.id, spec["verification_criterion"] or criterion,
+                "server-side workspace boundary and read-back check",
+                passed, evidence,
+            )
+            if not passed:
+                current = tasks.get_problem(problem.id)
+                if current and current.status == "running":
+                    tasks.set_problem_status(problem.id, "failed")
+                raise HTTPException(500, "The tool ran, but its verification check failed.")
+            remaining = tasks.list_steps(problem.id)
+            if remaining and all(item.status == "verified" for item in remaining):
+                tasks.complete_problem(problem.id)
+            output = dict(result)
+            if isinstance(output.get("content"), str) and len(output["content"]) > 20000:
+                output["content"] = output["content"][:20000]
+                output["truncated"] = True
+            return {"task_id": problem.id, "step": tasks.get_step(selected.id).__dict__,
+                    "tool_result": output, "verified": True,
+                    "duration_ms": round((time.perf_counter() - started_clock) * 1000),
+                    "task_status": tasks.get_problem(problem.id).status}
+        except HTTPException:
+            raise
+        except Exception as exc:
+            if started_at and not run_recorded:
+                try:
+                    tasks.record_tool_run(
+                        selected.id, spec["tool_name"], input_summary,
+                        "Tool failed: " + type(exc).__name__, "failed", started_at, now()
+                    )
+                except Exception:
+                    pass
+            current_step = tasks.get_step(selected.id)
+            if current_step and current_step.status in {"running", "verifying"}:
+                try:
+                    if current_step.status == "running":
+                        tasks.update_step_status(selected.id, "failed")
+                    else:
+                        tasks.record_verification(
+                            selected.id, spec["verification_criterion"],
+                            "Execution error", False, type(exc).__name__
+                        )
+                except Exception:
+                    pass
+            current_problem = tasks.get_problem(problem.id)
+            if current_problem and current_problem.status == "running":
+                try:
+                    tasks.set_problem_status(problem.id, "failed")
+                except ValueError:
+                    pass
+            raise HTTPException(500, "Agent tool failed safely: " + type(exc).__name__ + ": " + str(exc))
+
+    @app.post("/api/v1/workspaces/{workspace_id}/agent/tasks/{problem_id}/run-safe", dependencies=[Depends(authorize)])
+    def run_safe_agent_steps(workspace_id: str, problem_id: str):
+        """Run consecutive registered safe steps, stopping at the first approval boundary."""
+        try:
+            workspace = state.workspaces.get_workspace(workspace_id)
+        except ValueError:
+            raise HTTPException(404, "Workspace not found")
+        tasks = state.workspaces.tasks
+        problem = tasks.get_problem(problem_id)
+        if not problem or problem.workspace_id != workspace.id:
+            raise HTTPException(404, "Task not found in this workspace")
+        if problem.status in {"blocked", "failed", "completed", "cancelled"}:
+            raise HTTPException(409, "This task is not in an executable state.")
+
+        results = []
+        stop_reason = "No further plan steps are ready."
+        stopped_at_approval = False
+        for _ in range(8):
+            # Preserve the planner's exact step order. A pending step without a
+            # registered tool is a hard sequencing boundary, not permission to
+            # skip ahead and execute a later step.
+            next_step = next((
+                candidate for candidate in tasks.list_steps(problem.id)
+                if candidate.status not in {"verified", "cancelled", "failed", "blocked"}
+            ), None)
+            if next_step is None:
+                break
+            if not tasks.get_step_spec(next_step.id):
+                stop_reason = "Paused because the next plan step has no registered tool."
+                break
+            if next_step.status == "awaiting_approval" or (
+                next_step.permission_level != "read_only" and next_step.status != "approved"
+            ):
+                stopped_at_approval = True
+                stop_reason = "Paused at a step that requires your explicit approval."
+                current = tasks.get_problem(problem.id)
+                if current and current.status == "running":
+                    tasks.set_problem_status(problem.id, "awaiting_approval")
+                break
+            if next_step.status not in {"planned", "approved"}:
+                stop_reason = "Paused because the next step is not in a runnable state."
+                break
+            result = execute_next_agent_step(workspace_id, problem_id)
+            results.append(result)
+            if result.get("task_status") in {"completed", "failed", "blocked", "cancelled"}:
+                break
+        else:
+            stop_reason = "Safe execution batch limit reached; review the task before continuing."
+
+        current = tasks.get_problem(problem.id)
+        return {
+            "task_id": problem.id,
+            "results": results,
+            "executed_count": len(results),
+            "verified": all(item.get("verified") for item in results),
+            "stopped_at_approval": stopped_at_approval,
+            "stop_reason": stop_reason,
+            "task_status": current.status if current else "unknown",
+        }
+
+    @app.post("/api/v1/workspaces/{workspace_id}/agent/tasks/{problem_id}/cancel", dependencies=[Depends(authorize)])
+    def cancel_agent_task(workspace_id: str, problem_id: str):
+        try:
+            workspace = state.workspaces.get_workspace(workspace_id)
+        except ValueError:
+            raise HTTPException(404, "Workspace not found")
+        tasks = state.workspaces.tasks
+        problem = tasks.get_problem(problem_id)
+        if not problem or problem.workspace_id != workspace.id:
+            raise HTTPException(404, "Task not found in this workspace")
+        if problem.status in {"completed", "cancelled"}:
+            raise HTTPException(409, "This task is already closed.")
+        steps = tasks.list_steps(problem.id)
+        if any(step.status in {"running", "verifying"} for step in steps):
+            raise HTTPException(409, "A tool step is currently running. Wait for it to finish before cancelling.")
+        for step in steps:
+            if step.status in {"planned", "awaiting_approval", "approved", "blocked"}:
+                tasks.update_step_status(step.id, "cancelled")
+                if step.status == "awaiting_approval":
+                    tasks.record_approval_event(
+                        workspace.id, problem.id, step.id, "cancelled",
+                        "Task cancelled by the workspace owner."
+                    )
+        cancelled = tasks.set_problem_status(problem.id, "cancelled")
+        return {"task_id": problem.id, "status": cancelled.status,
+                "pending_approvals_cancelled": True, "execution_started": False}
+
+    @app.post("/api/v1/workspaces/{workspace_id}/agent/tasks/{problem_id}/steps/{step_id}/decision", dependencies=[Depends(authorize)])
+    def decide_agent_step(workspace_id: str, problem_id: str, step_id: str,
+                          payload: AgentDecisionInput):
+        try:
+            workspace = state.workspaces.get_workspace(workspace_id)
+        except ValueError:
+            raise HTTPException(404, "Workspace not found")
+        tasks = state.workspaces.tasks
+        problem = tasks.get_problem(problem_id)
+        if not problem or problem.workspace_id != workspace.id:
+            raise HTTPException(404, "Task not found in this workspace")
+        step = next((item for item in tasks.list_steps(problem.id) if item.id == step_id), None)
+        if not step:
+            raise HTTPException(404, "Plan step not found in this task")
+        if problem.status in {"blocked", "failed", "completed", "cancelled"}:
+            raise HTTPException(409, "This task is closed to further approval decisions.")
+        if step.status != "awaiting_approval":
+            raise HTTPException(409, "This step is no longer awaiting approval.")
+        decision = "approved" if payload.approved else "rejected"
+        try:
+            tasks.update_step_status(step.id, "approved" if payload.approved else "cancelled")
+            event = tasks.record_approval_event(workspace.id, problem.id, step.id,
+                                                decision, payload.note)
+            remaining = [item for item in tasks.list_steps(problem.id)
+                         if item.status == "awaiting_approval"]
+            if not payload.approved:
+                # A rejected step closes the task and cancels its other pending requests.
+                for pending_step in remaining:
+                    tasks.update_step_status(pending_step.id, "cancelled")
+                    tasks.record_approval_event(
+                        workspace.id, problem.id, pending_step.id, "cancelled",
+                        "Cancelled because another step was rejected."
+                    )
+                current = tasks.get_problem(problem.id)
+                if current and current.status in {"planned", "awaiting_approval", "running"}:
+                    tasks.set_problem_status(problem.id, "blocked")
+            elif not remaining and problem.status == "awaiting_approval":
+                tasks.set_problem_status(problem.id, "planned")
+            return {"decision": event, "task_status": tasks.get_problem(problem.id).status,
+                    "execution_started": False}
+        except ValueError as exc:
+            raise HTTPException(409, str(exc))
+
     @app.get("/api/v1/approvals", dependencies=[Depends(authorize)])
-    def approvals():
-        return {"approvals": [], "note": "Remote approval queue is not configured."}
+    def approvals(workspace_id: str | None = None):
+        db = state.connection()
+        try:
+            sql = ("SELECT s.id AS step_id, s.step_number, s.action, s.permission_level, "
+                   "s.status AS step_status, p.id AS problem_id, p.title AS task_title, "
+                   "p.description AS task_description, p.status AS task_status, "
+                   "p.workspace_id, w.name AS workspace_name, sp.tool_name, sp.input_json "
+                   "FROM plan_steps s JOIN problems p ON p.id=s.problem_id "
+                   "JOIN workspaces w ON w.id=p.workspace_id "
+                   "LEFT JOIN agent_step_specs sp ON sp.step_id=s.id "
+                   "WHERE s.status='awaiting_approval'")
+            params = []
+            if workspace_id:
+                try:
+                    state.workspaces.get_workspace(workspace_id)
+                except ValueError:
+                    raise HTTPException(404, "Workspace not found")
+                sql += " AND p.workspace_id=?"
+                params.append(workspace_id)
+            sql += " ORDER BY p.created_at, s.step_number"
+            rows = db.execute(sql, params).fetchall()
+            items = []
+            for row in rows:
+                item = dict(row)
+                raw_arguments = item.pop("input_json", None)
+                details = {}
+                if raw_arguments:
+                    try:
+                        arguments = json.loads(raw_arguments)
+                    except (TypeError, ValueError):
+                        arguments = {}
+                    if item.get("tool_name") == "workspace.create_note":
+                        details = {"filename": arguments.get("filename", ""),
+                                   "content": arguments.get("content", "")}
+                    elif item.get("tool_name") == "workspace.read_file":
+                        details = {"path": arguments.get("path", "")}
+                item["requested_details"] = details
+                items.append(item)
+            return {"approvals": items,
+                    "note": "Approval decisions are persisted. Approval does not itself execute an action."}
+        finally:
+            db.close()
     @app.post("/api/v1/iot/commands", dependencies=[Depends(authorize)])
     def iot_command(payload: CommandInput):
         raise HTTPException(403, "Physical commands disabled until a trusted gateway, device identity and human approval are configured.")

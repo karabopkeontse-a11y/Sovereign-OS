@@ -24,6 +24,31 @@ class FakeClient:
         return FakeBound(self.outcome)
 
 
+
+class FakeStreamBound:
+    def __init__(self, outcome):
+        self.outcome = outcome
+
+    def stream(self, messages):
+        if isinstance(self.outcome, Exception):
+            raise self.outcome
+        for item in self.outcome:
+            if isinstance(item, Exception):
+                raise item
+            yield item
+
+
+class FakeStreamClient:
+    def __init__(self, outcome):
+        self.outcome = outcome
+
+    def bind(self, **kwargs):
+        return FakeStreamBound(self.outcome)
+
+    def stream(self, messages):
+        return FakeStreamBound(self.outcome).stream(messages)
+
+
 class FakeError(Exception):
     status_code = 429
 
@@ -111,6 +136,65 @@ class ModelRouterTests(unittest.TestCase):
         self.assertEqual(router.candidates, [])
         self.assertTrue(any("disabled" in warning for warning in router.configuration_warnings))
 
+
+
+    def test_candidate_allowlist_prevents_qwen_fallback(self):
+        router = ModelRouter(environ={})
+        router.candidates = [
+            candidate("Groq", "qwen/qwen3.8-27b", "must not run"),
+            candidate("Provider B", "safe-model", "approved candidate"),
+            candidate("Provider C", "other-model", "must not run either"),
+        ]
+        result, info, index = router.invoke([], tools=[], candidate_indices=[1])
+        self.assertEqual(result, "approved candidate")
+        self.assertEqual(info.model, "safe-model")
+        self.assertEqual(index, 1)
+
+    def test_empty_candidate_allowlist_fails_closed(self):
+        router = ModelRouter(environ={})
+        router.candidates = [candidate("Groq", "qwen/qwen3.8-27b", "must not run")]
+        with self.assertRaises(ModelRoutingError):
+            router.invoke([], candidate_indices=[])
+
+
+    def test_stream_yields_incremental_chunks_from_configured_candidate(self):
+        router = ModelRouter(environ={})
+        router.candidates = [
+            ModelCandidate(ModelInfo("Provider A", "model-a", "cloud"),
+                           FakeStreamClient(["Hel", "lo"])),
+        ]
+        chunks = list(router.stream([], max_tokens=64))
+        self.assertEqual([item[0] for item in chunks], ["Hel", "lo"])
+        self.assertTrue(all(item[1].provider == "Provider A" and item[2] == 0
+                            for item in chunks))
+        self.assertEqual(router.health_snapshot()[0]["successes"], 1)
+
+    def test_stream_fails_over_only_before_first_chunk(self):
+        router = ModelRouter(environ={})
+        router.candidates = [
+            ModelCandidate(ModelInfo("Provider A", "model-a", "cloud"),
+                           FakeStreamClient(FakeError("rate limit"))),
+            ModelCandidate(ModelInfo("Provider B", "model-b", "local"),
+                           FakeStreamClient(["fallback"])),
+        ]
+        chunks = list(router.stream([]))
+        self.assertEqual([item[0] for item in chunks], ["fallback"])
+        self.assertEqual(chunks[0][1].provider, "Provider B")
+
+    def test_stream_never_switches_provider_after_output_starts(self):
+        router = ModelRouter(environ={})
+        router.candidates = [
+            ModelCandidate(ModelInfo("Provider A", "model-a", "cloud"),
+                           FakeStreamClient(["partial", FakeError("rate limit")])),
+            ModelCandidate(ModelInfo("Provider B", "model-b", "local"),
+                           FakeStreamClient(["must not be mixed in"])),
+        ]
+        stream = router.stream([])
+        first = next(stream)
+        self.assertEqual(first[0], "partial")
+        with self.assertRaises(FakeError):
+            next(stream)
+        self.assertEqual(router.health_snapshot()[1]["successes"], 0)
 
 if __name__ == "__main__":
     unittest.main()

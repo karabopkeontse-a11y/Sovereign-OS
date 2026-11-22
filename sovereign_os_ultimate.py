@@ -2075,17 +2075,42 @@ if __name__ == "__main__":
         native_mode = False
 
     if native_mode:
-        app.native.start_args["gui"] = "edgechromium"
-
-    print("Launching SovereignOS native desktop shell." if native_mode
-          else "Launching SovereignOS in local browser mode.")
-    ui.run(
-        title="SovereignOS",
-        native=native_mode,
-        window_size=(1440, 900) if native_mode else None,
-        host="127.0.0.1",
-        reload=False,
-        port=8080,
-        dark=True,
-        show=not native_mode,
-    )
+        # The NiceGUI page is only a redirect to the real Vite client. Starting
+        # NiceGUI inside PyWebView needlessly loads NiceGUI's Vue/import-map
+        # runtime before that redirect, which can fail independently of the
+        # actual SovereignOS client. Open the Vite client directly instead.
+        import webview
+        print("Launching SovereignOS native desktop shell directly on the Vite client.")
+        webview.create_window(
+            "SovereignOS",
+            "http://127.0.0.1:5173/",
+            width=1440,
+            height=900,
+            min_size=(1024, 700),
+        )
+        # Use a stable, app-specific WebView2 profile instead of pywebview's
+        # disposable temporary profile. Windows can keep WebView2 child-process
+        # files locked briefly during shutdown; a persistent UDF avoids deleting
+        # a live profile and preserves harmless UI preferences between runs.
+        local_app_data = Path(
+            os.getenv("LOCALAPPDATA") or (Path.home() / "AppData" / "Local")
+        )
+        webview_data = local_app_data / "SovereignOS" / "WebView2"
+        webview_data.mkdir(parents=True, exist_ok=True)
+        webview.start(
+            gui="edgechromium",
+            debug=False,
+            private_mode=False,
+            storage_path=str(webview_data),
+        )
+    else:
+        print("Launching SovereignOS in local browser mode.")
+        ui.run(
+            title="SovereignOS",
+            native=False,
+            host="127.0.0.1",
+            reload=False,
+            port=8080,
+            dark=True,
+            show=True,
+        )
