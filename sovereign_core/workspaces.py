@@ -19,6 +19,9 @@ class WorkspaceService:
         ("Nikolai Creative Studio", "NCS publishing, design, marketing and business work."),
         ("Yard Truths", "Yard Truths editorial, brand and publishing work."),
         ("SmartFlow BW", "SmartFlow BW product development and Thothi assistant work."),
+        ("Opportunity Finder", "Public-web opportunity discovery, lead research and evidence verification."),
+        ("Social Lead Hunter", "General-purpose public-internet lead discovery, research and pipeline management."),
+        ("Hustle Pack BW", "Business tools, startup packs, document creation and marketing resources."),
         ("SovereignOS", "SovereignOS core platform, architecture and engineering."),
     )
 

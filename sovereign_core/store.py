@@ -90,6 +90,122 @@ class TaskStore:
                     FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
                 );
             """)
+            self._migrate_plugin_registry(db)
+
+    def _migrate_plugin_registry(self, db) -> None:
+        """Add the versioned plugin registry without rewriting existing records."""
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                applied_at TEXT NOT NULL
+            )
+        """)
+
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS plugins (
+                plugin_id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                version TEXT NOT NULL,
+                manifest_json TEXT NOT NULL,
+                source_type TEXT NOT NULL
+                    CHECK(source_type IN ('builtin','local','git','cloud','external')),
+                source_uri TEXT,
+                install_path TEXT,
+                manifest_hash TEXT,
+                signature TEXT,
+                status TEXT NOT NULL DEFAULT 'registered'
+                    CHECK(status IN ('registered','enabled','disabled','error','uninstalled')),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
+
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS plugin_capabilities (
+                plugin_id TEXT NOT NULL,
+                capability_id TEXT NOT NULL,
+                version TEXT NOT NULL,
+                contract_json TEXT NOT NULL,
+                execution_target TEXT NOT NULL
+                    CHECK(execution_target IN ('local','cloud','either')),
+                risk_level TEXT NOT NULL
+                    CHECK(risk_level IN ('low','medium','high','critical')),
+                enabled INTEGER NOT NULL DEFAULT 0 CHECK(enabled IN (0,1)),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(plugin_id, capability_id),
+                FOREIGN KEY(plugin_id) REFERENCES plugins(plugin_id)
+            )
+        """)
+
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS workspace_metadata (
+                workspace_id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL
+                    CHECK(kind IN ('core','plugin','user','placeholder','legacy')),
+                status TEXT NOT NULL DEFAULT 'active'
+                    CHECK(status IN ('active','disabled','archived')),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
+            )
+        """)
+
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS workspace_plugins (
+                workspace_id TEXT NOT NULL,
+                plugin_id TEXT NOT NULL,
+                installed_version TEXT NOT NULL,
+                config_json TEXT NOT NULL DEFAULT '{}',
+                permissions_json TEXT NOT NULL DEFAULT '{}',
+                status TEXT NOT NULL DEFAULT 'disabled'
+                    CHECK(status IN ('enabled','disabled','error')),
+                installed_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(workspace_id, plugin_id),
+                FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+                FOREIGN KEY(plugin_id) REFERENCES plugins(plugin_id)
+            )
+        """)
+
+        db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_workspace_metadata_status
+            ON workspace_metadata(status, kind)
+        """)
+        db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_workspace_plugins_plugin
+            ON workspace_plugins(plugin_id, status)
+        """)
+
+        version = db.execute(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations"
+        ).fetchone()[0]
+
+        if version < 1:
+            now = _now()
+            existing = db.execute(
+                "SELECT id, name FROM workspaces"
+            ).fetchall()
+
+            for workspace_id, name in existing:
+                if name in ("General", "SovereignOS"):
+                    kind = "core"
+                elif name in ("Nikolai Creative Studio", "Yard Truths"):
+                    kind = "placeholder"
+                else:
+                    kind = "legacy"
+
+                db.execute("""
+                    INSERT OR IGNORE INTO workspace_metadata
+                    (workspace_id, kind, status, created_at, updated_at)
+                    VALUES (?, ?, 'active', ?, ?)
+                """, (workspace_id, kind, now, now))
+
+            db.execute("""
+                INSERT INTO schema_migrations(version, name, applied_at)
+                VALUES (1, 'plugin_registry_foundation', ?)
+            """, (now,))
 
     def create_workspace(self, name: str, purpose: str) -> Workspace:
         name = name.strip()

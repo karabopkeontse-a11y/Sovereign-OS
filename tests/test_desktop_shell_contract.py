@@ -36,8 +36,20 @@ class DesktopShellContractTests(unittest.TestCase):
         source = (ROOT / "sovereign_os_ultimate.py").read_text(encoding="utf-8")
         self.assertIn('os.getenv("SOVEREIGN_NATIVE_WINDOW", "auto")', source)
         self.assertIn("webview_available = importlib.util.find_spec(\"webview\") is not None", source)
-        self.assertIn("native=native_mode", source)
-        self.assertIn("show=not native_mode", source)
+        # Native mode must launch through PyWebView.
+        self.assertIn("if native_mode:", source)
+        self.assertIn("webview.create_window(", source)
+        self.assertIn("webview.start(", source)
+
+        # Missing PyWebView or invalid configuration must fall back safely.
+        self.assertIn("if native_mode and not webview_available:", source)
+        self.assertIn("Unrecognised SOVEREIGN_NATIVE_WINDOW", source)
+
+        # Browser mode must explicitly use NiceGUI's non-native browser mode.
+        self.assertIn('print("Launching SovereignOS in local browser mode.")', source)
+        self.assertIn("ui.run(", source)
+        self.assertIn("native=False", source)
+        self.assertIn("show=True", source)
 
 
 if __name__ == "__main__":
