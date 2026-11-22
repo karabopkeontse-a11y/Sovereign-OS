@@ -634,7 +634,7 @@ def create_app(db_path=None, router=None, token=None):
             owner = db.execute("SELECT id FROM api_conversations WHERE id=? AND workspace_id=?", (conversation_id, workspace_id)).fetchone()
             if owner is None:
                 raise HTTPException(404, "Conversation not found in this workspace")
-            rows = db.execute("SELECT role, content, provider, model, created_at FROM api_messages WHERE conversation_id=? ORDER BY created_at, id", (conversation_id,)).fetchall()
+            rows = db.execute("SELECT role, content, provider, model, created_at FROM api_messages WHERE conversation_id=? ORDER BY created_at, rowid", (conversation_id,)).fetchall()
             return {"messages": [dict(row) for row in rows]}
         finally:
             db.close()
