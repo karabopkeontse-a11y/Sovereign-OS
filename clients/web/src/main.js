@@ -29,12 +29,15 @@ let audioContext=null;
 
 let activeAudio=null,activeAudioUrl=null,voiceRequestController=null,activeUtterance=null,lastSpokenText="",voiceStreamController=null,activeLiveSpeechStop=null,bargeInMonitoring=false,bargeInTriggered=false;
 
-let liveRecognition=null,liveInterimText="",liveFinalizing=false,voiceCloudConsentSession=0;
+let liveRecognition=null,liveInterimText="",liveFinalText="",liveSubmitTimer=null,liveRecognitionRestartTimer=null,liveFinalizing=false,voiceCloudConsentSession=0;
 
 function stopStreamingRecognition(){
+ if(liveSubmitTimer){clearTimeout(liveSubmitTimer);liveSubmitTimer=null;}
+ if(liveRecognitionRestartTimer){clearTimeout(liveRecognitionRestartTimer);liveRecognitionRestartTimer=null;}
  const recognition=liveRecognition;
  liveRecognition=null;
  liveInterimText="";
+ liveFinalText="";
  if(recognition){
   recognition.onresult=null;
   recognition.onerror=null;
@@ -308,6 +311,8 @@ function cleanAssistantText(value){return String(value??"").replace(/\r\n?/g,"\n
 function speechText(value){let text=cleanAssistantText(value);const urls=[];text=text.replace(/\b(?:https?:\/\/|www\.)[^\s<>]+/gi,match=>{const url=match.replace(/[),.;!?]+$/,"");urls.push(url);return " URLTOKEN"+(urls.length-1)+" ";});text=text.replace(/[#*_~>|{}\[\]]/g," ").replace(/[•▪◦]/g," ").replace(/\s*[-–—]{2,}\s*/g,". ").replace(/\s+/g," ").trim();return text.replace(/URLTOKEN(\d+)/g,(_,index)=>urls[Number(index)]||"");}
 function addBubble(role,text,images=[]){const box=el("messages");const welcome=box.querySelector(".chat-welcome");if(welcome)welcome.remove();if(box.childNodes.length===1&&box.firstChild.nodeType===3&&/No conversations|Connect the API/.test(box.textContent))box.replaceChildren();const b=document.createElement("div");b.className="bubble "+(role==="user"?"user":"assistant");if(role==="assistant"){const source=String(text??"");const pattern=/!\[([^\]]*)\]\((https?:\/\/[^\s)]+)\)/g;let cursor=0,match;while((match=pattern.exec(source))){const before=source.slice(cursor,match.index);if(before.trim()){const p=document.createElement("p");p.textContent=cleanAssistantText(before);b.append(p);}const img=document.createElement("img");img.className="assistant-image";img.src=match[2];img.alt=match[1]||"Sovereign illustration";img.loading="lazy";img.referrerPolicy="no-referrer";b.append(img);cursor=pattern.lastIndex;}const tail=source.slice(cursor);if(tail.trim()){const p=document.createElement("p");p.textContent=cleanAssistantText(tail);b.append(p);}if(!b.childNodes.length)b.textContent=cleanAssistantText(source);}else{b.textContent=text;images.forEach(src=>{const img=document.createElement("img");img.className="assistant-image";img.src=src;img.alt="User attached image";img.loading="lazy";b.append(img);});}box.append(b);box.scrollTop=box.scrollHeight;return b;}
 
+// Live voice starts speaking while the rest of the answer is generated.
+// Each completed phrase is enqueued and played without waiting for stream completion.
 function createLiveSpeechQueue(session){
  const queue=[];let active=false,finished=false,stopped=false,monitorStarted=false;
  const closeMonitor=()=>{
@@ -335,7 +340,13 @@ function createLiveSpeechQueue(session){
    if(!monitorStarted&&!bargeInTriggered){monitorStarted=true;bargeInMonitoring=true;startBatchRecognition(session);}
   };
   utterance.onend=()=>{active=false;pump();};
-  utterance.onerror=()=>{active=false;stopped=true;closeMonitor();voiceBusy=false;if(!bargeInTriggered)appendTranscript("SYSTEM","Live browser speech stopped. The complete response remains visible.");if(callActive&&session===callSession&&!bargeInTriggered)listenAgain(500);};
+  utterance.onerror=event=>{
+   active=false;
+   if(session!==callSession)return;
+   if(bargeInTriggered){stopped=true;closeMonitor();return;}
+   appendTranscript("SYSTEM","A speech phrase could not play ("+(event?.error||"browser speech error") + "). Continuing with the remaining response.");
+   pump();
+  };
   active=true;try{window.speechSynthesis.speak(utterance);}catch(error){active=false;stopped=true;closeMonitor();voiceBusy=false;appendTranscript("SYSTEM","Live speech could not start: "+error.message);}
  };
  const stopQueue=()=>{stopped=true;queue.length=0;if(activeLiveSpeechStop===stopQueue)activeLiveSpeechStop=null;};
@@ -678,54 +689,30 @@ async function startBatchRecognition(session){
  try{
   micDiscard=true;
   let stream=await navigator.mediaDevices.getUserMedia({
-   audio:{
-    channelCount:1,
-    echoCancellation:true,
-    noiseSuppression:true,
-    autoGainControl:true
-   }
+   audio:{channelCount:1,echoCancellation:true,noiseSuppression:true,autoGainControl:true}
   });
-
-  // Prefer a real microphone over Stereo Mix when Edge exposes device labels.
   try{
    const devices=await navigator.mediaDevices.enumerateDevices();
-   const inputs=devices.filter(d=>d.kind==="audioinput"&&d.deviceId&&
-    !/stereo mix|loopback/i.test(d.label));
-   const preferred=inputs.find(d=>/realtek/i.test(d.label)&&/microphone|mic/i.test(d.label))||
-    inputs.find(d=>/microphone|mic in/i.test(d.label));
+   const inputs=devices.filter(d=>d.kind==="audioinput"&&d.deviceId&&!/stereo mix|loopback/i.test(d.label));
+   const preferred=inputs.find(d=>/realtek/i.test(d.label)&&/microphone|mic/i.test(d.label))||inputs.find(d=>/microphone|mic in/i.test(d.label));
    const currentId=stream.getAudioTracks()[0]?.getSettings?.().deviceId;
    if(preferred&&preferred.deviceId!==currentId){
     try{
      const selected=await navigator.mediaDevices.getUserMedia({
-      audio:{
-       deviceId:{exact:preferred.deviceId},
-       channelCount:1,
-       echoCancellation:true,
-       noiseSuppression:true,
-       autoGainControl:true
-      }
+      audio:{deviceId:{exact:preferred.deviceId},channelCount:1,echoCancellation:true,noiseSuppression:true,autoGainControl:true}
      });
      stream.getTracks().forEach(track=>track.stop());
      stream=selected;
-    }catch(selectionError){
-     console.warn("Preferred microphone unavailable; retaining browser-selected input.",selectionError);
-    }
+    }catch(selectionError){console.warn("Preferred microphone unavailable; retaining browser-selected input.",selectionError);}
    }
-  }catch(deviceError){
-   console.warn("Microphone enumeration unavailable; retaining browser-selected input.",deviceError);
-  }
+  }catch(deviceError){console.warn("Microphone enumeration unavailable; retaining browser-selected input.",deviceError);}
 
-  if(!callActive||session!==callSession){
-   stream.getTracks().forEach(track=>track.stop());
-   return;
-  }
-
+  if(!callActive||session!==callSession){stream.getTracks().forEach(track=>track.stop());return;}
   micStream=stream;
   micDiscard=false;
   const track=stream.getAudioTracks()[0];
   const trackSettings=track?.getSettings?.()||{};
   const micLabel=track?.label||"Browser-selected microphone";
-
   const AudioContextClass=window.AudioContext||window.webkitAudioContext;
   micAudioContext=new AudioContextClass();
   await micAudioContext.resume();
@@ -735,7 +722,6 @@ async function startBatchRecognition(session){
   micAnalyser=micAudioContext.createAnalyser();
   micAnalyser.fftSize=1024;
   source.connect(micAnalyser);
-
   micNoiseFloor=0.0015;
   micCalibrationStartedAt=performance.now();
   micSpeechStartedAt=0;
@@ -744,44 +730,116 @@ async function startBatchRecognition(session){
   micFinalizing=false;
   micChunks=[];
   micRecorder=null;
-
   let lastMeterUpdate=0;
 
-  const mimeType=MediaRecorder.isTypeSupported("audio/webm;codecs=opus")?"audio/webm;codecs=opus":
-   (MediaRecorder.isTypeSupported("audio/webm")?"audio/webm":"");
+  // Record only during spoken replies for the existing interruption fallback.
+  if(bargeInMonitoring){
+   const mimeType=MediaRecorder.isTypeSupported("audio/webm;codecs=opus")?"audio/webm;codecs=opus":
+    (MediaRecorder.isTypeSupported("audio/webm")?"audio/webm":"");
+   micRecorder=mimeType?new MediaRecorder(stream,{mimeType}):new MediaRecorder(stream);
+   micRecorder.ondataavailable=event=>{if(event.data?.size&&!micDiscard)micChunks.push(event.data);};
+   micRecorder.onerror=()=>{
+    if(session!==callSession)return;
+    voiceBusy=false;
+    stopMicrophone(true);
+    appendTranscript("SYSTEM","Interruption audio capture encountered an error.");
+    if(callActive)listenAgain(700);
+   };
+   micRecorder.onstop=()=>{
+    const shouldDiscard=micDiscard;
+    const chunks=micChunks.slice();
+    const type=micRecorder?.mimeType||chunks.find(c=>c.type)?.type||"audio/webm";
+    micRecorder=null;
+    if(shouldDiscard||session!==callSession||!callActive)return;
+    const blob=new Blob(chunks,{type});
+    stopMicrophone(true);
+    voiceBusy=true;
+    setCallState("thinking","TRANSCRIBING","One moment","Converting your interruption into text.");
+    transcribeVoiceBlob(blob,session);
+   };
+   micRecorder.start(200);
+  }else{
+   const RecognitionClass=window.SpeechRecognition||window.webkitSpeechRecognition;
+   if(!RecognitionClass)throw Error("Live speech recognition is unavailable. Use Microsoft Edge and check its speech and microphone permissions.");
 
-  micRecorder=mimeType?new MediaRecorder(stream,{mimeType}):new MediaRecorder(stream);
+   const scheduleRestart=delay=>{
+    if(liveRecognitionRestartTimer)clearTimeout(liveRecognitionRestartTimer);
+    liveRecognitionRestartTimer=window.setTimeout(()=>{
+     liveRecognitionRestartTimer=null;
+     if(!callActive||session!==callSession||!micStream||liveFinalizing||liveSubmitTimer||bargeInMonitoring||liveRecognition)return;
+     startLiveRecognition();
+    },delay);
+   };
 
-  micRecorder.ondataavailable=event=>{
-   // Preserve every timeslice in order; dropping WebM chunks can corrupt the recording.
-   if(event.data?.size&&!micDiscard)micChunks.push(event.data);
-  };
+   const startLiveRecognition=()=>{
+    if(!callActive||session!==callSession||!micStream||liveFinalizing||liveRecognition)return;
+    const recognition=new RecognitionClass();
+    recognition.lang=prefs.voiceLanguage||navigator.language||"en-GB";
+    recognition.continuous=true;
+    recognition.interimResults=true;
+    recognition.maxAlternatives=1;
+    recognition.onresult=event=>{
+     if(session!==callSession||!callActive||liveFinalizing)return;
+     let interim="";
+     for(let i=event.resultIndex;i<event.results.length;i++){
+      const result=event.results[i];
+      const spoken=result[0]?.transcript?.trim()||"";
+      if(!spoken)continue;
+      if(result.isFinal)liveFinalText+=(liveFinalText?" ":"")+spoken;
+      else interim+=(interim?" ":"")+spoken;
+     }
+     liveInterimText=interim;
+     const detail=el("voice-state-detail");
+     if(detail&&interim)detail.textContent="Hearing: "+interim;
+     if(liveFinalText.trim()){
+      if(liveSubmitTimer)clearTimeout(liveSubmitTimer);
+      liveSubmitTimer=window.setTimeout(()=>{
+       liveSubmitTimer=null;
+       if(!callActive||session!==callSession||voiceBusy||liveFinalizing)return;
+       const transcript=liveFinalText.trim();
+       if(!transcript)return;
+       liveFinalizing=true;
+       voiceBusy=true;
+       appendTranscript("YOU",transcript);
+       setCallState("thinking","THINKING","One moment","Sending recognised speech directly to SovereignOS.");
+       stopMicrophone(true);
+       sendMessage(transcript,{voice:true,voiceSession:session}).catch(error=>{
+        console.warn("Live voice submission failed:",error);
+        if(!callActive||session!==callSession)return;
+        voiceBusy=false;
+        liveFinalizing=false;
+        appendTranscript("SYSTEM","Voice request failed: "+(error.message||"Unknown error"));
+        listenAgain(650);
+       });
+      },550);
+     }
+    };
+    recognition.onerror=event=>{
+     if(liveRecognition===recognition)liveRecognition=null;
+     if(session!==callSession||!callActive||liveFinalizing)return;
+     if(event.error==="not-allowed"||event.error==="service-not-allowed"){
+      voiceBusy=false;
+      stopMicrophone(true);
+      setCallState("error","SPEECH PERMISSION REQUIRED","Edge blocked speech recognition.","Allow microphone and speech recognition access for SovereignOS, then start the call again.");
+      return;
+     }
+     if(!liveSubmitTimer)scheduleRestart(event.error==="no-speech"?250:600);
+    };
+    recognition.onend=()=>{
+     if(liveRecognition===recognition)liveRecognition=null;
+     if(session===callSession&&callActive&&!liveFinalizing&&!liveSubmitTimer)scheduleRestart(300);
+    };
+    liveRecognition=recognition;
+    try{recognition.start();}
+    catch(error){
+     if(liveRecognition===recognition)liveRecognition=null;
+     scheduleRestart(600);
+    }
+   };
+   startLiveRecognition();
+  }
 
-  micRecorder.onerror=()=>{
-   if(session!==callSession)return;
-   voiceBusy=false;
-   stopMicrophone(true);
-   appendTranscript("SYSTEM","Microphone recording encountered an error.");
-   if(callActive)listenAgain(700);
-  };
-
-  micRecorder.onstop=()=>{
-   const shouldDiscard=micDiscard;
-   const chunks=micChunks.slice();
-   const type=micRecorder?.mimeType||chunks.find(c=>c.type)?.type||"audio/webm";
-   micRecorder=null;
-   if(shouldDiscard||session!==callSession||!callActive)return;
-   const blob=new Blob(chunks,{type});
-   stopMicrophone(true);
-   voiceBusy=true;
-   setCallState("thinking","TRANSCRIBING","One moment","Converting your speech into text.");
-   transcribeVoiceBlob(blob,session);
-  };
-
-  micRecorder.start(200);
-
-  const gainText=trackSettings.autoGainControl===false?
-   "Automatic microphone gain unavailable":"Automatic microphone gain enabled";
+  const gainText=trackSettings.autoGainControl===false?"Automatic microphone gain unavailable":"Automatic microphone gain enabled";
   if(bargeInMonitoring&&!bargeInTriggered){
    setCallState("speaking","SPEAKING","Sovereign is responding.","Listening for your interruption · "+gainText+" · "+micLabel);
   }else{
@@ -789,7 +847,6 @@ async function startBatchRecognition(session){
   }
 
   const samples=new Float32Array(micAnalyser.fftSize);
-
   const finishUtterance=()=>{
    if(micFinalizing||!micRecorder||micRecorder.state==="inactive")return;
    micFinalizing=true;
@@ -801,33 +858,26 @@ async function startBatchRecognition(session){
     if(callActive&&session===callSession)listenAgain(500);
    }
   };
-
   const inspectLevel=()=>{
    if(!callActive||session!==callSession||!micAnalyser||micFinalizing)return;
-
    micAnalyser.getFloatTimeDomainData(samples);
    let sum=0;
    for(let i=0;i<samples.length;i++)sum+=samples[i]*samples[i];
    const rms=Math.sqrt(sum/samples.length);
    const now=performance.now();
    const calibrating=now-micCalibrationStartedAt<500;
-   const threshold=Math.max(0.0018,micNoiseFloor*2.0);
-
-   // Show measured input level so a silent browser input is immediately visible.
+   // Stricter threshold while Sovereign speaks to reject speaker echo.
+   const threshold=bargeInMonitoring?Math.max(0.006,micNoiseFloor*3.2):Math.max(0.0018,micNoiseFloor*2.0);
    if(now-lastMeterUpdate>=250){
     const detail=el("voice-state-detail");
     if(detail)detail.textContent="Microphone active · "+micLabel;
     lastMeterUpdate=now;
    }
-
    if(!micSpeechStartedAt){
     if(!calibrating){
      if(rms>threshold)micAboveCount++;
-     else{
-      micAboveCount=0;
-      micNoiseFloor=Math.min(0.01,micNoiseFloor*0.96+rms*0.04);
-     }
-     if(micAboveCount>=3){
+     else{micAboveCount=0;micNoiseFloor=Math.min(0.01,micNoiseFloor*0.96+rms*0.04);}
+     if(micAboveCount>=(bargeInMonitoring?10:3)){
       micSpeechStartedAt=now;
       micLastVoiceAt=now;
       if(bargeInMonitoring&&!bargeInTriggered){
@@ -843,7 +893,6 @@ async function startBatchRecognition(session){
     if(rms>threshold)micLastVoiceAt=now;
     if(now-micLastVoiceAt>=850||now-micSpeechStartedAt>=18000)finishUtterance();
    }
-
    if(!micSpeechStartedAt&&now-micCalibrationStartedAt>=12000){
     micDiscard=true;
     stopMicrophone(true);
@@ -853,7 +902,6 @@ async function startBatchRecognition(session){
    }
    if(!micFinalizing)micFrame=requestAnimationFrame(inspectLevel);
   };
-
   micFrame=requestAnimationFrame(inspectLevel);
  }catch(error){
   stopMicrophone(true);
@@ -868,7 +916,6 @@ async function startBatchRecognition(session){
   notice("Could not open microphone: "+(error.message||error.name),"error");
  }
 }
-
 function startRecognition(session){
  if(!callActive||session!==callSession||voiceBusy||micStream)return;
 
@@ -909,7 +956,7 @@ async function startCall(){
  if(callActive)return;
  const approved=await inAppConfirm({
   title:"Allow cloud speech recognition for this call?",
-  message:"SovereignOS will send the microphone audio you speak during this call to Google's speech-recognition service to convert it to text. SovereignOS does not save the raw recording. If you decline, the microphone will not start. Cloud recognition is not a local/offline service.",
+  message:"SovereignOS uses your browser speech-recognition service for normal turns. If you interrupt spoken replies, it may send a short microphone recording to Google's speech-recognition service as a fallback. These services may process audio online; SovereignOS does not save the raw recording. If you decline, the microphone will not start.",
   confirmLabel:"Allow for this call"
  });
  if(!approved)return;
