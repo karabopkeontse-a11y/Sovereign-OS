@@ -73,6 +73,20 @@ class CollaborationRecoveryStoreTests(unittest.TestCase):
                 request_key="mission-request-002",
             )
 
+    def test_only_one_worker_can_claim_a_queued_run(self):
+        self.assertTrue(self.store.claim_agent_collaboration_run(
+            self.workspace.id, self.run["id"]
+        ))
+        self.assertFalse(self.store.claim_agent_collaboration_run(
+            self.workspace.id, self.run["id"]
+        ))
+        self.assertEqual(
+            self.store.get_agent_collaboration_run(
+                self.workspace.id, self.run["id"]
+            )["status"],
+            "running",
+        )
+
     def test_run_and_checkpoints_are_persisted_and_workspace_scoped(self):
         checkpoint = self.store.create_agent_collaboration_checkpoint(
             self.workspace.id, self.run["id"], self.discussion["id"],
