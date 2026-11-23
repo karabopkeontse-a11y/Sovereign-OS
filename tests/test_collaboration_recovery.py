@@ -28,7 +28,7 @@ class CollaborationRecoveryStoreTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def test_schema_v4_is_applied_without_removing_existing_tables(self):
+    def test_schema_v5_is_applied_without_removing_existing_tables(self):
         # sqlite3.Connection.__exit__ commits/rolls back but does not close;
         # explicitly close it so Windows can remove the TemporaryDirectory.
         with closing(sqlite3.connect(self.store.db_path)) as db:
@@ -40,12 +40,38 @@ class CollaborationRecoveryStoreTests(unittest.TestCase):
                     "SELECT name FROM sqlite_master WHERE type='table'"
                 )
             }
-        self.assertEqual(version, 4)
+        self.assertEqual(version, 5)
         self.assertTrue({
             "plugins", "workspace_metadata", "workspace_plugins",
             "agent_discussions", "agent_assignments",
             "agent_collaboration_runs", "agent_collaboration_checkpoints",
         }.issubset(tables))
+
+    def test_idempotency_key_returns_the_original_run(self):
+        first = self.store.create_agent_collaboration_run(
+            self.workspace.id, self.discussion["id"],
+            "Prepare a reliable launch plan", specialist_ids=["specialist-0"],
+            max_agents=2, request_key="mission-request-001",
+        )
+        second = self.store.create_agent_collaboration_run(
+            self.workspace.id, self.discussion["id"],
+            "Prepare a reliable launch plan", specialist_ids=["specialist-0"],
+            max_agents=2, request_key="mission-request-001",
+        )
+        self.assertEqual(first["id"], second["id"])
+        self.assertEqual(first["request_key"], "mission-request-001")
+
+    def test_idempotency_key_cannot_be_reused_for_another_task(self):
+        self.store.create_agent_collaboration_run(
+            self.workspace.id, self.discussion["id"],
+            "Prepare a reliable launch plan", request_key="mission-request-002",
+        )
+        with self.assertRaisesRegex(ValueError, "different mission"):
+            self.store.create_agent_collaboration_run(
+                self.workspace.id, self.discussion["id"],
+                "Publish an unrelated announcement",
+                request_key="mission-request-002",
+            )
 
     def test_run_and_checkpoints_are_persisted_and_workspace_scoped(self):
         checkpoint = self.store.create_agent_collaboration_checkpoint(
