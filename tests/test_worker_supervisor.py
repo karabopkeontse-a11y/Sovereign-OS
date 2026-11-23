@@ -222,7 +222,8 @@ class MissionWorkerSupervisorTests(unittest.TestCase):
             max_attempts=1,
         )
         self.store.claim_mission_job(
-            self.workspace.id, "unrelated-old-worker", lease_seconds=10
+            self.workspace.id, "unrelated-old-worker", lease_seconds=10,
+            mission_id=stale_generic["id"],
         )
         expired_at = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
         with self.store._connection() as db:
