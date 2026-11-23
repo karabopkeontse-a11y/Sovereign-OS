@@ -156,7 +156,8 @@ class RegisteredAgentExecutionServiceTests(unittest.TestCase):
         self.assertEqual(self.store.get_step(step.id).status, "running")
 
         recovered = execute_registered_step(
-            self.store, self.db_path, self.workspace.id, problem.id, step.id
+            self.store, self.db_path, self.workspace.id, problem.id, step.id,
+            recover_interrupted=True,
         )
         self.assertTrue(recovered["reconciled"])
         self.assertTrue(recovered["verified"])
@@ -191,7 +192,8 @@ class RegisteredAgentExecutionServiceTests(unittest.TestCase):
 
         with self.assertRaises(AgentStepExecutionError) as caught:
             execute_registered_step(
-                self.store, self.db_path, self.workspace.id, problem.id, step.id
+                self.store, self.db_path, self.workspace.id, problem.id, step.id,
+                recover_interrupted=True,
             )
         self.assertEqual(caught.exception.status_code, 409)
         self.assertEqual(target.read_text(encoding="utf-8"), "A different file was placed here.")
