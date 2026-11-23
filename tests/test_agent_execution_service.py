@@ -216,7 +216,8 @@ class RegisteredAgentExecutionServiceTests(unittest.TestCase):
         receipt = self.store.get_step_execution_receipt(self.workspace.id, step.id)
         self.assertEqual(receipt["status"], "effect_applied")
         recovered = execute_registered_step(
-            self.store, self.db_path, self.workspace.id, problem.id, step.id
+            self.store, self.db_path, self.workspace.id, problem.id, step.id,
+            recover_interrupted=True,
         )
         self.assertTrue(recovered["reconciled"])
         self.assertTrue(recovered["verified"])
