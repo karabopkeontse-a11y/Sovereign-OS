@@ -1087,8 +1087,8 @@ def create_app(db_path=None, router=None, token=None):
             run = tasks.get_agent_collaboration_run(workspace_id, run_id)
             if not run:
                 raise HTTPException(404, "Collaboration run not found in this workspace")
-            if run["status"] == "completed":
-                raise HTTPException(409, "This collaboration run is already completed.")
+            if run["status"] in {"completed", "cancelled"}:
+                raise HTTPException(409, "This collaboration run is already in a terminal state.")
             if run["status"] == "running":
                 with _collaboration_active_lock:
                     worker_active = run_id in _collaboration_active_runs
