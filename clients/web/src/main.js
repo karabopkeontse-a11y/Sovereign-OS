@@ -162,8 +162,12 @@ async function loadSpecialists(){
  try{
   const data=await api("/api/v1/models/specialists");list.replaceChildren();
   if(!data.specialists.length){const empty=document.createElement("p");empty.textContent="No configured model candidates yet. Add provider credentials in the local API environment and restart SovereignOS.";list.append(empty);run.disabled=true;return;}
-  data.specialists.forEach(sp=>{const label=document.createElement("label");label.className="specialist-option";const input=document.createElement("input");input.type="checkbox";input.value=sp.id;input.checked=list.querySelectorAll("input:checked").length<Math.min(2,data.specialists.length);const copy=document.createElement("span");const name=document.createElement("b");name.textContent=sp.title;const detail=document.createElement("small");detail.textContent=sp.provider+" · "+sp.model+" · "+sp.status;copy.append(name,detail);label.append(input,copy);list.append(label);input.onchange=()=>{const checked=list.querySelectorAll("input:checked");if(checked.length>4){input.checked=false;notice("A group can include up to four Specialists.","warning");}run.disabled=list.querySelectorAll("input:checked").length<2;};});
+  let saved=null;
+  try{saved=JSON.parse(sessionStorage.getItem("so-collab-pending:"+active)||"null");}catch(error){}
+  if(saved?.mission)el("group-mission").value=saved.mission;
+  data.specialists.forEach((sp,index)=>{const label=document.createElement("label");label.className="specialist-option";const input=document.createElement("input");input.type="checkbox";input.value=sp.id;input.checked=saved?.selected?.length?saved.selected.includes(sp.id):index<Math.min(2,data.specialists.length);const copy=document.createElement("span");const name=document.createElement("b");name.textContent=sp.title;const detail=document.createElement("small");detail.textContent=sp.provider+" · "+sp.model+" · "+sp.status;copy.append(name,detail);label.append(input,copy);list.append(label);input.onchange=()=>{const checked=list.querySelectorAll("input:checked");if(checked.length>4){input.checked=false;notice("A group can include up to four Specialists.","warning");}run.disabled=list.querySelectorAll("input:checked").length<2;};});
   run.disabled=list.querySelectorAll("input:checked").length<2;
+  if(saved?.mission)notice("An unfinished collaboration was restored. Select Run Specialists to reconnect to its saved run without creating a duplicate.");
  }catch(error){list.textContent="Specialist roster unavailable: "+error.message;run.disabled=true;}
 }
 async function runSpecialistGroup(){
