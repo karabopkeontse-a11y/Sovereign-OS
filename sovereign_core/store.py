@@ -1279,6 +1279,29 @@ class TaskStore:
         expires = (now_dt + timedelta(seconds=int(lease_seconds))).isoformat()
         with self._connection() as db:
             db.execute("BEGIN IMMEDIATE")
+            # A worker that exhausted its retry budget must not remain running forever.
+            exhausted = db.execute("""
+                SELECT id, worker_id FROM mission_jobs
+                WHERE workspace_id=? AND status='running'
+                  AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?
+                  AND attempts >= max_attempts
+            """, (workspace_id, now)).fetchall()
+            for stale in exhausted:
+                db.execute("""
+                    UPDATE mission_jobs SET status='failed', worker_id='',
+                        lease_expires_at=NULL, heartbeat_at=NULL,
+                        last_error='Worker lease expired after maximum attempts',
+                        completed_at=?, updated_at=?
+                    WHERE id=? AND workspace_id=? AND status='running'
+                """, (now, now, stale["id"], workspace_id))
+                db.execute("""
+                    INSERT INTO mission_job_events
+                    (id, workspace_id, mission_id, event_type, worker_id, detail, created_at)
+                    VALUES (?, ?, ?, 'failed', ?, ?, ?)
+                """, (
+                    str(uuid4()), workspace_id, stale["id"], stale["worker_id"],
+                    "Worker lease expired after maximum attempts", now,
+                ))
             sql = """
                 SELECT * FROM mission_jobs
                 WHERE workspace_id=? AND attempts < max_attempts
@@ -1355,7 +1378,7 @@ class TaskStore:
         """Apply a guarded mission transition and append an immutable event."""
         import json
         transitions = {
-            "scheduled": {"queued", "cancelled"},
+            "scheduled": {"cancelled"},
             "queued": {"cancelled", "paused"},
             "running": {"paused", "retryable", "completed", "failed", "cancelled"},
             "paused": {"queued", "cancelled"},
