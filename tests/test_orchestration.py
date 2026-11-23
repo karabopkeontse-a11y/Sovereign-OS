@@ -98,6 +98,7 @@ class FakeRouter:
         self.invocations = []
         self.fail_at = None
         self.empty_at = None
+        self.empty_all = False
 
     def invoke(self, messages, start_index=None, **kwargs):
         index = start_index or 0
@@ -112,7 +113,7 @@ class FakeRouter:
         self.invocations.append({"index": index, "prompt": prompt})
         response = SimpleNamespace(
             content=(
-                "" if self.empty_at == self.calls
+                "" if self.empty_all or self.empty_at == self.calls
                 else f"Test response {self.calls}. Reviewed the available evidence."
             )
         )
@@ -327,6 +328,48 @@ class DurableOrchestrationRecoveryTests(unittest.TestCase):
                 workspace.id, discussion["id"]
             )), 8)
             self.assertEqual(router.calls, 8)
+
+
+    def test_empty_responses_fail_checkpoint_with_actionable_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = TaskStore(Path(directory) / "all-empty.sqlite3")
+            workspace = store.create_workspace(
+                "Empty Response Test", "Test empty model output"
+            )
+            leader = store.create_agent_identity(
+                workspace.id, "leader", "Sovereign Lead"
+            )
+            discussion = store.create_agent_discussion(
+                workspace.id, "Do not persist empty output", leader["id"]
+            )
+            run = store.create_agent_collaboration_run(
+                workspace.id, discussion["id"], "Prepare a safe launch plan",
+                specialist_ids=["specialist-0", "specialist-1"],
+                max_agents=2, request_key="all-empty-response-test",
+            )
+            router = FakeRouter()
+            router.empty_all = True
+
+            with self.assertRaisesRegex(
+                RuntimeError, "Model returned an empty response for collaboration stage"
+            ) as raised:
+                run_collaboration(
+                    store, router, workspace, run["task"],
+                    specialist_ids=["specialist-0", "specialist-1"],
+                    run_id=run["id"], discussion_id=discussion["id"],
+                )
+
+            self.assertNotIn("Checkpoint result is required", str(raised.exception))
+            checkpoints = store.list_agent_collaboration_checkpoints(
+                workspace.id, run["id"]
+            )
+            self.assertEqual(len(checkpoints), 1)
+            self.assertEqual(checkpoints[0]["status"], "failed")
+            self.assertEqual(checkpoints[0]["result"], "")
+            saved_run = store.get_agent_collaboration_run(workspace.id, run["id"])
+            self.assertEqual(saved_run["status"], "retryable")
+            self.assertIn("Model returned an empty response", saved_run["last_error"])
+            self.assertEqual(router.calls, 2)
 
 
 if __name__ == "__main__":
