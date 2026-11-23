@@ -73,6 +73,26 @@ class MissionRuntimeStoreTests(unittest.TestCase):
             "scheduled",
         )
 
+    def test_priority_order_is_respected_for_eligible_missions(self):
+        low = self.store.create_mission_job(
+            self.workspace.id, "Low priority", {}, priority=1
+        )
+        high = self.store.create_mission_job(
+            self.workspace.id, "High priority", {}, priority=10
+        )
+        claimed = self.store.claim_mission_job(
+            self.workspace.id, "worker-priority"
+        )
+        self.assertEqual(claimed["id"], high["id"])
+        self.assertNotEqual(claimed["id"], low["id"])
+
+    def test_invalid_schedule_timestamp_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "valid ISO timestamp"):
+            self.store.create_mission_job(
+                self.workspace.id, "Bad schedule", {},
+                scheduled_at="tomorrow morning",
+            )
+
     def test_only_one_concurrent_worker_claims_a_mission(self):
         job = self.store.create_mission_job(self.workspace.id, "One claim", {})
         with ThreadPoolExecutor(max_workers=8) as pool:
