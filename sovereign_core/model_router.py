@@ -182,6 +182,7 @@ class ModelRouter:
             ))
         except (TypeError, ValueError):
             self.total_deadline_seconds = 60.0
+        self.request_timeout = min(self.request_timeout, self.total_deadline_seconds)
         self._provider_cooldowns: dict[str, tuple[float, str]] = {}
         self._candidate_cooldowns: dict[str, tuple[float, str]] = {}
         self._provider_failures: dict[str, int] = {}
@@ -506,6 +507,8 @@ class ModelRouter:
                 raise ModelRoutingError("No permitted model candidate is available for this request.")
         deadline = self._clock() + self.total_deadline_seconds
         for index in order:
+            if self._clock() >= deadline:
+                break
             candidate = self.candidates[index]
             eligible, reason = self._eligible(candidate)
             if not eligible:
@@ -513,6 +516,8 @@ class ModelRouter:
                 continue
             emitted = False
             for attempt in range(1, self.max_attempts + 1):
+                if self._clock() >= deadline:
+                    break
                 try:
                     model = candidate.client
                     if max_tokens is not None:
