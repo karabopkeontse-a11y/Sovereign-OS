@@ -84,6 +84,13 @@ class RegisteredAgentExecutionServiceTests(unittest.TestCase):
         self.assertTrue(result["tool_result"]["created"])
         target = Path(self.temp.name) / "agent_workspace" / self.workspace.id / "approved.md"
         self.assertEqual(target.read_text(encoding="utf-8"), "# Approved\nPersisted safely.")
+        receipt = self.store.get_step_execution_receipt(self.workspace.id, step.id)
+        self.assertEqual(receipt["status"], "verified")
+        replay = execute_registered_step(
+            self.store, self.db_path, self.workspace.id, problem.id, step.id
+        )
+        self.assertTrue(replay["replayed"])
+        self.assertEqual(target.read_text(encoding="utf-8"), "# Approved\\nPersisted safely.")
         approvals = self.store.list_approval_events(self.workspace.id, problem.id)
         self.assertEqual([event["decision"] for event in approvals], ["approved"])
 
@@ -120,6 +127,101 @@ class RegisteredAgentExecutionServiceTests(unittest.TestCase):
         self.assertTrue(result["verified"])
         self.assertEqual(calls, ["workspace.list_files"])
         self.assertEqual(self.store.get_step(step.id).status, "verified")
+
+    def test_crash_after_note_creation_is_reconciled_without_repeating_tool(self):
+        problem, step = self.create_task(
+            tool="workspace.create_note",
+            arguments={"filename": "recovered.md", "content": "# Recovered\\nCreated before crash."},
+            permission="external_effect",
+        )
+        self.store.update_step_status(step.id, "approved")
+        self.store.record_approval_event(self.workspace.id, problem.id, step.id, "approved")
+        target = Path(self.temp.name) / "agent_workspace" / self.workspace.id / "recovered.md"
+        calls = []
+
+        def create_then_crash(tool_name, arguments, root):
+            calls.append(tool_name)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(arguments["content"], encoding="utf-8")
+            raise SystemExit("simulated process termination after side effect")
+
+        with patch("sovereign_core.agent_execution.execute_workspace_tool", side_effect=create_then_crash):
+            with self.assertRaises(SystemExit):
+                execute_registered_step(
+                    self.store, self.db_path, self.workspace.id, problem.id, step.id
+                )
+
+        interrupted_receipt = self.store.get_step_execution_receipt(self.workspace.id, step.id)
+        self.assertEqual(interrupted_receipt["status"], "executing")
+        self.assertEqual(self.store.get_step(step.id).status, "running")
+
+        recovered = execute_registered_step(
+            self.store, self.db_path, self.workspace.id, problem.id, step.id
+        )
+        self.assertTrue(recovered["reconciled"])
+        self.assertTrue(recovered["verified"])
+        self.assertEqual(calls, ["workspace.create_note"])
+        self.assertEqual(target.read_text(encoding="utf-8"), "# Recovered\\nCreated before crash.")
+        self.assertEqual(
+            self.store.get_step_execution_receipt(self.workspace.id, step.id)["status"],
+            "verified",
+        )
+
+    def test_receipt_conflict_never_overwrites_existing_file(self):
+        problem, step = self.create_task(
+            tool="workspace.create_note",
+            arguments={"filename": "conflict.md", "content": "Approved original"},
+            permission="external_effect",
+        )
+        self.store.update_step_status(step.id, "approved")
+        self.store.record_approval_event(self.workspace.id, problem.id, step.id, "approved")
+        target = Path(self.temp.name) / "agent_workspace" / self.workspace.id / "conflict.md"
+
+        def create_then_crash(tool_name, arguments, root):
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(arguments["content"], encoding="utf-8")
+            raise SystemExit("simulated process termination")
+
+        with patch("sovereign_core.agent_execution.execute_workspace_tool", side_effect=create_then_crash):
+            with self.assertRaises(SystemExit):
+                execute_registered_step(
+                    self.store, self.db_path, self.workspace.id, problem.id, step.id
+                )
+        target.write_text("A different file was placed here.", encoding="utf-8")
+
+        with self.assertRaises(AgentStepExecutionError) as caught:
+            execute_registered_step(
+                self.store, self.db_path, self.workspace.id, problem.id, step.id
+            )
+        self.assertEqual(caught.exception.status_code, 409)
+        self.assertEqual(target.read_text(encoding="utf-8"), "A different file was placed here.")
+        self.assertEqual(self.store.get_step(step.id).status, "blocked")
+        self.assertEqual(
+            self.store.get_step_execution_receipt(self.workspace.id, step.id)["status"],
+            "unknown",
+        )
+
+    def test_effect_applied_receipt_recovers_without_rerunning_read_tool(self):
+        problem, step = self.create_task()
+        with patch(
+            "sovereign_core.agent_execution.verify_workspace_tool",
+            side_effect=SystemExit("simulated crash before verification"),
+        ):
+            with self.assertRaises(SystemExit):
+                execute_registered_step(
+                    self.store, self.db_path, self.workspace.id, problem.id, step.id
+                )
+        receipt = self.store.get_step_execution_receipt(self.workspace.id, step.id)
+        self.assertEqual(receipt["status"], "effect_applied")
+        recovered = execute_registered_step(
+            self.store, self.db_path, self.workspace.id, problem.id, step.id
+        )
+        self.assertTrue(recovered["reconciled"])
+        self.assertTrue(recovered["verified"])
+        self.assertEqual(
+            self.store.get_step_execution_receipt(self.workspace.id, step.id)["status"],
+            "verified",
+        )
 
     def test_unknown_registered_tool_is_rejected_without_execution(self):
         problem, step = self.create_task(tool="shell.execute", arguments={"command": "whoami"})
