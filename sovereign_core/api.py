@@ -6,9 +6,10 @@ import asyncio, io, json
 import os, secrets, sqlite3, shutil, subprocess, zipfile
 import time
 import logging
+import threading
 from pathlib import Path
 from uuid import uuid4
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field, field_validator
@@ -42,6 +43,8 @@ if not any(
         "%(asctime)s %(levelname)s %(message)s"
     ))
     collaboration_logger.addHandler(_collaboration_handler)
+
+_collaboration_submit_lock = threading.Lock()
 
 def now():
     return datetime.now(timezone.utc).isoformat()
@@ -427,6 +430,40 @@ def create_libreoffice_test_document(workspace_root: Path):
     return {"file_name": target.name, "opened": True, "process_id": process.pid,
             "scope": "SovereignOS agent workspace only"}
 
+
+def _execute_collaboration_run(state, workspace_id: str, run_id: str) -> None:
+    """Background worker; durable stage results are committed by the orchestrator."""
+    started = time.monotonic()
+    tasks = state.workspaces.tasks
+    run = tasks.get_agent_collaboration_run(workspace_id, run_id)
+    if not run or run["status"] == "completed":
+        return
+    try:
+        workspace = state.workspaces.get_workspace(workspace_id)
+        from .orchestration import run_collaboration
+        result = run_collaboration(
+            store=tasks,
+            router=state.get_router(),
+            workspace=workspace,
+            task=run["task"],
+            conversation_id=run.get("conversation_id"),
+            memory_context=run.get("memory_context", ""),
+            max_agents=run.get("max_agents", 4),
+            specialist_ids=run.get("specialist_ids") or None,
+            run_id=run_id,
+            discussion_id=run["discussion_id"],
+        )
+        collaboration_logger.info(
+            "run_completed workspace=%s run=%s duration_seconds=%.2f",
+            workspace_id, run_id, time.monotonic() - started,
+        )
+    except Exception as exc:
+        collaboration_logger.warning(
+            "run_retryable workspace=%s run=%s error_type=%s",
+            workspace_id, run_id, type(exc).__name__,
+        )
+
+
 def create_app(db_path=None, router=None, token=None):
     state = SovereignAPI(db_path or os.getenv("SOVEREIGN_DB_PATH",
                           "sovereign_workspace/sovereign_tasks.sqlite3"), router)
@@ -439,7 +476,7 @@ def create_app(db_path=None, router=None, token=None):
     origins = [x.strip() for x in os.getenv("SOVEREIGN_API_CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173,http://localhost:8080,http://127.0.0.1:8080").split(",") if x.strip()]
     if origins:
         app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=False,
-                           allow_methods=["GET", "POST"], allow_headers=["Authorization", "Content-Type", "X-Sovereign-Language", "X-Sovereign-Cloud-Consent"])
+                           allow_methods=["GET", "POST"], allow_headers=["Authorization", "Content-Type", "Idempotency-Key", "X-Sovereign-Language", "X-Sovereign-Cloud-Consent"])
     def authorize(authorization: str | None = Header(default=None)):
         if not expected_token:
             raise HTTPException(503, "API locked: configure SOVEREIGN_API_TOKEN")
@@ -867,8 +904,12 @@ def create_app(db_path=None, router=None, token=None):
 
 
     @app.post("/api/v1/workspaces/{workspace_id}/orchestrate",
-              dependencies=[Depends(authorize)])
-    def orchestrate_workspace(workspace_id: str, payload: OrchestrationInput):
+              status_code=202, dependencies=[Depends(authorize)])
+    def orchestrate_workspace(
+        workspace_id: str, payload: OrchestrationInput,
+        background_tasks: BackgroundTasks,
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    ):
         try:
             workspace = state.workspaces.get_workspace(workspace_id)
         except ValueError:
@@ -889,64 +930,144 @@ def create_app(db_path=None, router=None, token=None):
             finally:
                 db.close()
 
-        request_id = uuid4().hex[:12]
-        started_at = time.monotonic()
-        collaboration_logger.info(
-            "request_started id=%s max_agents=%s",
-            request_id, payload.max_agents,
-        )
+        request_key = (idempotency_key or uuid4().hex).strip()
+        if not request_key or len(request_key) > 200:
+            raise HTTPException(400, "A valid Idempotency-Key is required.")
+        tasks = state.workspaces.tasks
         try:
-            memories = state.workspaces.search(
-                workspace.id, payload.message, limit=5
-            )
-            memory_context = "\\n".join(
-                "- " + item.content for item in memories
-            ) or "(none)"
-
-            from .orchestration import run_collaboration
-
-            result = run_collaboration(
-                store=state.workspaces.tasks,
-                router=state.get_router(),
-                workspace=workspace,
-                task=payload.message,
-                conversation_id=conversation_id,
-                memory_context=memory_context,
-                max_agents=payload.max_agents,
-                specialist_ids=payload.specialist_ids,
-            )
-            duration = time.monotonic() - started_at
-            collaboration_logger.info(
-                "request_completed id=%s duration_seconds=%.2f "
-                "proposals=%d peer_reviews=%d agent_responses=%d",
-                request_id, duration,
-                len(result.get("proposals", [])),
-                len(result.get("peer_reviews", [])),
-                len(result.get("agent_responses", [])),
-            )
-            return result
-        except HTTPException as exc:
-            collaboration_logger.info(
-                "request_http_exception id=%s duration_seconds=%.2f status=%s",
-                request_id, time.monotonic() - started_at, exc.status_code,
-            )
+            with _collaboration_submit_lock:
+                run = tasks.get_agent_collaboration_run_by_request_key(
+                    workspace.id, request_key
+                )
+                if run:
+                    if (
+                        run["task"] != payload.message.strip()
+                        or run.get("conversation_id") != conversation_id
+                        or run.get("specialist_ids", []) != (payload.specialist_ids or [])
+                        or run.get("max_agents") != payload.max_agents
+                    ):
+                        raise HTTPException(
+                            409, "Idempotency key was already used for a different mission."
+                        )
+                else:
+                    router_instance = state.get_router()
+                    candidates = getattr(router_instance, "candidates", [])
+                    if not candidates:
+                        raise HTTPException(503, "No configured model candidates are available.")
+                    identities = tasks.list_agent_identities(workspace.id)
+                    leader = next((
+                        item for item in identities
+                        if item.get("role") == "leader"
+                        and item.get("name") == "Sovereign Lead"
+                    ), None)
+                    if leader is None:
+                        info = candidates[0].info
+                        leader = tasks.create_agent_identity(
+                            workspace.id, "leader", "Sovereign Lead",
+                            "Coordinate agents, resolve disagreements and verify the final report.",
+                            info.provider, info.model, getattr(info, "runtime", ""),
+                        )
+                    discussion = tasks.create_agent_discussion(
+                        workspace.id, payload.message.strip()[:240],
+                        leader["id"], conversation_id,
+                    )
+                    memories = state.workspaces.search(
+                        workspace.id, payload.message, limit=5
+                    )
+                    memory_context = "\\n".join(
+                        "- " + item.content for item in memories
+                    ) or "(none)"
+                    run = tasks.create_agent_collaboration_run(
+                        workspace_id=workspace.id,
+                        discussion_id=discussion["id"],
+                        task=payload.message,
+                        conversation_id=conversation_id,
+                        memory_context=memory_context,
+                        specialist_ids=payload.specialist_ids,
+                        max_agents=payload.max_agents,
+                        request_key=request_key,
+                    )
+            if run["status"] in {"queued", "retryable"}:
+                if run["status"] == "retryable":
+                    tasks.update_agent_collaboration_run(
+                        workspace.id, run["id"], status="queued", last_error=""
+                    )
+                background_tasks.add_task(
+                    _execute_collaboration_run, state, workspace.id, run["id"]
+                )
+            return {
+                "run_id": run["id"],
+                "workspace_id": workspace.id,
+                "discussion_id": run["discussion_id"],
+                "conversation_id": run.get("conversation_id"),
+                "status": run["status"],
+                "status_url": (
+                    f"/api/v1/workspaces/{workspace.id}/agent-collaboration-runs/{run['id']}"
+                ),
+                "idempotency_key": request_key,
+            }
+        except HTTPException:
             raise
         except ValueError as exc:
-            collaboration_logger.warning(
-                "request_validation_failed id=%s duration_seconds=%.2f error_type=%s",
-                request_id, time.monotonic() - started_at, type(exc).__name__,
-            )
             raise HTTPException(400, str(exc))
         except Exception as exc:
             collaboration_logger.error(
-                "request_failed id=%s duration_seconds=%.2f error_type=%s",
-                request_id, time.monotonic() - started_at, type(exc).__name__,
+                "run_submission_failed workspace=%s error_type=%s",
+                workspace.id, type(exc).__name__,
             )
             raise HTTPException(
-                503,
-                "Orchestration incomplete: "
-                + type(exc).__name__ + ": " + str(exc),
+                503, "Could not queue collaboration: " + type(exc).__name__
             )
+
+    @app.get(
+        "/api/v1/workspaces/{workspace_id}/agent-collaboration-runs/{run_id}",
+        dependencies=[Depends(authorize)],
+    )
+    def get_collaboration_run(workspace_id: str, run_id: str):
+        try:
+            state.workspaces.get_workspace(workspace_id)
+            run = state.workspaces.tasks.get_agent_collaboration_run(
+                workspace_id, run_id
+            )
+            if not run:
+                raise HTTPException(404, "Collaboration run not found in this workspace")
+            checkpoints = state.workspaces.tasks.list_agent_collaboration_checkpoints(
+                workspace_id, run_id
+            )
+            return {"run": run, "checkpoints": checkpoints}
+        except HTTPException:
+            raise
+        except ValueError:
+            raise HTTPException(404, "Collaboration run not found in this workspace")
+
+    @app.post(
+        "/api/v1/workspaces/{workspace_id}/agent-collaboration-runs/{run_id}/retry",
+        status_code=202, dependencies=[Depends(authorize)],
+    )
+    def retry_collaboration_run(
+        workspace_id: str, run_id: str, background_tasks: BackgroundTasks
+    ):
+        try:
+            state.workspaces.get_workspace(workspace_id)
+            tasks = state.workspaces.tasks
+            run = tasks.get_agent_collaboration_run(workspace_id, run_id)
+            if not run:
+                raise HTTPException(404, "Collaboration run not found in this workspace")
+            if run["status"] == "completed":
+                raise HTTPException(409, "This collaboration run is already completed.")
+            if run["status"] == "running":
+                return {"run_id": run_id, "status": "running", "resumed": False}
+            tasks.update_agent_collaboration_run(
+                workspace_id, run_id, status="queued", last_error=""
+            )
+            background_tasks.add_task(
+                _execute_collaboration_run, state, workspace_id, run_id
+            )
+            return {"run_id": run_id, "status": "queued", "resumed": True}
+        except HTTPException:
+            raise
+        except ValueError:
+            raise HTTPException(404, "Collaboration run not found in this workspace")
 
     @app.get("/api/v1/models/health", dependencies=[Depends(authorize)])
     def model_health():
