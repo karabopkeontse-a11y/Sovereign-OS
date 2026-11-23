@@ -38,6 +38,7 @@ def execute_registered_step(
     workspace_id: str,
     problem_id: str,
     step_id: str | None = None,
+    recover_interrupted: bool = False,
 ) -> dict:
     """Execute exactly one registered plan step within its owning workspace.
 
@@ -81,6 +82,11 @@ def execute_registered_step(
     receipt = store.get_step_execution_receipt(workspace.id, selected.id)
     if receipt and (receipt["tool_name"] != spec["tool_name"] or receipt["input_json"] != spec["input_json"]):
         raise AgentStepExecutionError(409, "The registered step changed after its execution receipt was created.")
+
+    if receipt and receipt["status"] in {"prepared", "executing", "effect_applied", "unknown"} and not recover_interrupted:
+        raise AgentStepExecutionError(
+            409, "This step has an existing execution receipt. Use the explicit recovery path to reconcile it."
+        )
 
     if receipt and receipt["status"] == "verified":
         saved_result = json.loads(receipt["result_json"] or "{}")
