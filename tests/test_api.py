@@ -153,6 +153,14 @@ class SovereignAPITests(unittest.TestCase):
         self.assertEqual(status.status_code, 200)
         self.assertEqual(status.json()["run"]["status"], "completed")
         self.assertEqual(len(status.json()["checkpoints"]), 7)
+        other_workspace_id = next(
+            item["id"] for item in workspaces if item["id"] != workspace_id
+        )
+        foreign_status = client.get(
+            f"/api/v1/workspaces/{other_workspace_id}/agent-collaboration-runs/{run_id}",
+            headers=self.headers,
+        )
+        self.assertEqual(foreign_status.status_code, 404)
 
         replay = client.post(
             f"/api/v1/workspaces/{workspace_id}/orchestrate",
