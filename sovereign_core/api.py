@@ -1068,7 +1068,11 @@ def create_app(db_path=None, router=None, token=None):
             checkpoints = tasks.list_agent_collaboration_checkpoints(
                 workspace_id, run_id
             )
-            return {"run": run, "checkpoints": checkpoints}
+            public_run = {
+                key: value for key, value in run.items()
+                if key != "memory_context"
+            }
+            return {"run": public_run, "checkpoints": checkpoints}
         except HTTPException:
             raise
         except ValueError:
