@@ -992,7 +992,7 @@ def create_app(db_path=None, router=None, token=None):
                     memories = state.workspaces.search(
                         workspace.id, payload.message, limit=5
                     )
-                    memory_context = "\\n".join(
+                    memory_context = "\n".join(
                         "- " + item.content for item in memories
                     ) or "(none)"
                     run = tasks.create_agent_collaboration_run(
