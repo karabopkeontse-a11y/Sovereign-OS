@@ -39,6 +39,17 @@ class FakeRouter:
             runtime = "cloud"
         return Reply(), Info(), 0
 
+class FakeCollaborationRouter(FakeRouter):
+    candidates = [
+        type("Candidate", (), {"info": type("Info", (), {
+            "provider": "Test", "model": "specialist-one", "runtime": "local"
+        })()})(),
+        type("Candidate", (), {"info": type("Info", (), {
+            "provider": "Test", "model": "specialist-two", "runtime": "local"
+        })()})(),
+    ]
+
+
 class FakeQwenOnlyRouter(FakeRouter):
     candidates = [type("Candidate", (), {
         "info": type("Info", (), {"provider": "Groq", "model": "qwen/qwen3.8-27b", "runtime": "local"})()
@@ -115,6 +126,46 @@ class SovereignAPITests(unittest.TestCase):
         self.headers = {"Authorization":"Bearer test-secret"}
     def tearDown(self):
         self.temp.cleanup()
+    def test_orchestration_returns_durable_run_and_idempotent_replay(self):
+        client = TestClient(create_app(
+            Path(self.temp.name) / "collaboration.sqlite3",
+            router=FakeCollaborationRouter(), token="test-secret",
+        ))
+        headers = {**self.headers, "Idempotency-Key": "api-mission-001"}
+        workspaces = client.get("/api/v1/workspaces", headers=self.headers).json()["workspaces"]
+        workspace_id = next(item["id"] for item in workspaces
+                            if item["name"] == "Nikolai Creative Studio")
+        payload = {
+            "message": "Prepare a practical workspace launch plan",
+            "specialist_ids": ["specialist-0", "specialist-1"],
+            "max_agents": 2,
+        }
+        first = client.post(
+            f"/api/v1/workspaces/{workspace_id}/orchestrate",
+            headers=headers, json=payload,
+        )
+        self.assertEqual(first.status_code, 202)
+        run_id = first.json()["run_id"]
+        status = client.get(
+            f"/api/v1/workspaces/{workspace_id}/agent-collaboration-runs/{run_id}",
+            headers=self.headers,
+        )
+        self.assertEqual(status.status_code, 200)
+        self.assertEqual(status.json()["run"]["status"], "completed")
+        self.assertEqual(len(status.json()["checkpoints"]), 7)
+
+        replay = client.post(
+            f"/api/v1/workspaces/{workspace_id}/orchestrate",
+            headers=headers, json=payload,
+        )
+        self.assertEqual(replay.status_code, 202)
+        self.assertEqual(replay.json()["run_id"], run_id)
+        discussions = client.get(
+            f"/api/v1/workspaces/{workspace_id}/agent-discussions",
+            headers=self.headers,
+        ).json()["discussions"]
+        self.assertEqual(len(discussions), 1)
+
     def test_voice_transcription_requires_auth(self):
         result = self.client.post(
             "/api/v1/voice/transcribe",
