@@ -2,7 +2,7 @@
 import tempfile
 import time
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Event
 
@@ -74,7 +74,7 @@ class MissionWorkerSupervisorTests(unittest.TestCase):
         retry_at = datetime.fromisoformat(saved["scheduled_at"])
         self.assertEqual(saved["status"], "retryable")
         self.assertEqual(saved["attempts"], 1)
-        self.assertEqual(retry_at, now.replace(microsecond=retry_at.microsecond) + __import__("datetime").timedelta(seconds=30))
+        self.assertEqual(retry_at, now + timedelta(seconds=30))
         self.assertIn("temporary provider outage", saved["last_error"])
         self.assertIsNone(
             self.store.claim_mission_job(self.workspace.id, "worker-too-early")
