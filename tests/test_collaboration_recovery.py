@@ -53,6 +53,28 @@ class CollaborationRecoveryStoreTests(unittest.TestCase):
             "agent_collaboration_runs", "agent_collaboration_checkpoints",
         }.issubset(tables))
 
+    def test_discussion_and_run_are_created_atomically_for_one_key(self):
+        leader = self.store.create_agent_identity(
+            self.workspace.id, "leader", "Sovereign Lead"
+        )
+        first = self.store.create_agent_collaboration_run_with_discussion(
+            self.workspace.id, leader["id"], "Atomic mission",
+            specialist_ids=["specialist-0", "specialist-1"],
+            max_agents=2, request_key="atomic-mission-001",
+        )
+        second = self.store.create_agent_collaboration_run_with_discussion(
+            self.workspace.id, leader["id"], "Atomic mission",
+            specialist_ids=["specialist-0", "specialist-1"],
+            max_agents=2, request_key="atomic-mission-001",
+        )
+        self.assertEqual(first["id"], second["id"])
+        self.assertEqual(first["discussion_id"], second["discussion_id"])
+        matching = [
+            item for item in self.store.list_agent_discussions(self.workspace.id)
+            if item["title"] == "Atomic mission"
+        ]
+        self.assertEqual(len(matching), 1)
+
     def test_idempotency_key_returns_the_original_run(self):
         first = self.store.create_agent_collaboration_run(
             self.workspace.id, self.discussion["id"],
