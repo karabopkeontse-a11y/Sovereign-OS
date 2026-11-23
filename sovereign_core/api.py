@@ -45,6 +45,8 @@ if not any(
     collaboration_logger.addHandler(_collaboration_handler)
 
 _collaboration_submit_lock = threading.Lock()
+_collaboration_active_lock = threading.Lock()
+_collaboration_active_runs = set()
 
 def now():
     return datetime.now(timezone.utc).isoformat()
@@ -431,37 +433,53 @@ def create_libreoffice_test_document(workspace_root: Path):
             "scope": "SovereignOS agent workspace only"}
 
 
+def _schedule_collaboration_run(background_tasks, state, workspace_id, run_id):
+    with _collaboration_active_lock:
+        if run_id in _collaboration_active_runs:
+            return False
+        _collaboration_active_runs.add(run_id)
+    background_tasks.add_task(
+        _execute_collaboration_run, state, workspace_id, run_id
+    )
+    return True
+
+
 def _execute_collaboration_run(state, workspace_id: str, run_id: str) -> None:
     """Background worker; durable stage results are committed by the orchestrator."""
     started = time.monotonic()
-    tasks = state.workspaces.tasks
-    run = tasks.get_agent_collaboration_run(workspace_id, run_id)
-    if not run or run["status"] == "completed":
-        return
     try:
-        workspace = state.workspaces.get_workspace(workspace_id)
-        from .orchestration import run_collaboration
-        result = run_collaboration(
-            store=tasks,
-            router=state.get_router(),
-            workspace=workspace,
-            task=run["task"],
-            conversation_id=run.get("conversation_id"),
-            memory_context=run.get("memory_context", ""),
-            max_agents=run.get("max_agents", 4),
-            specialist_ids=run.get("specialist_ids") or None,
-            run_id=run_id,
-            discussion_id=run["discussion_id"],
-        )
-        collaboration_logger.info(
-            "run_completed workspace=%s run=%s duration_seconds=%.2f",
-            workspace_id, run_id, time.monotonic() - started,
-        )
-    except Exception as exc:
-        collaboration_logger.warning(
-            "run_retryable workspace=%s run=%s error_type=%s",
-            workspace_id, run_id, type(exc).__name__,
-        )
+        tasks = state.workspaces.tasks
+        run = tasks.get_agent_collaboration_run(workspace_id, run_id)
+        if not run or run["status"] == "completed":
+            return
+        try:
+            workspace = state.workspaces.get_workspace(workspace_id)
+            from .orchestration import run_collaboration
+            run_collaboration(
+                store=tasks,
+                router=state.get_router(),
+                workspace=workspace,
+                task=run["task"],
+                conversation_id=run.get("conversation_id"),
+                memory_context=run.get("memory_context", ""),
+                max_agents=run.get("max_agents", 4),
+                specialist_ids=run.get("specialist_ids") or None,
+                run_id=run_id,
+                discussion_id=run["discussion_id"],
+            )
+            collaboration_logger.info(
+                "run_completed workspace=%s run=%s duration_seconds=%.2f",
+                workspace_id, run_id, time.monotonic() - started,
+            )
+        except Exception as exc:
+            collaboration_logger.warning(
+                "run_retryable workspace=%s run=%s error_type=%s",
+                workspace_id, run_id, type(exc).__name__,
+            )
+    finally:
+        with _collaboration_active_lock:
+            _collaboration_active_runs.discard(run_id)
+
 
 
 def create_app(db_path=None, router=None, token=None):
@@ -992,8 +1010,8 @@ def create_app(db_path=None, router=None, token=None):
                     tasks.update_agent_collaboration_run(
                         workspace.id, run["id"], status="queued", last_error=""
                     )
-                background_tasks.add_task(
-                    _execute_collaboration_run, state, workspace.id, run["id"]
+                _schedule_collaboration_run(
+                    background_tasks, state, workspace.id, run["id"]
                 )
             return {
                 "run_id": run["id"],
@@ -1060,8 +1078,8 @@ def create_app(db_path=None, router=None, token=None):
             tasks.update_agent_collaboration_run(
                 workspace_id, run_id, status="queued", last_error=""
             )
-            background_tasks.add_task(
-                _execute_collaboration_run, state, workspace_id, run_id
+            _schedule_collaboration_run(
+                background_tasks, state, workspace_id, run_id
             )
             return {"run_id": run_id, "status": "queued", "resumed": True}
         except HTTPException:
