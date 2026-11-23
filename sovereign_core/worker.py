@@ -157,7 +157,7 @@ class MissionWorkerSupervisor:
         try:
             result = self.executor(job, context)
             finished.set()
-            heartbeat.join(timeout=max(1.0, self.heartbeat_interval_seconds + 0.5))
+            heartbeat.join()
             if context.lease_lost:
                 self._increment("lease_losses")
                 return
@@ -177,6 +177,8 @@ class MissionWorkerSupervisor:
             )
             self._increment("completed")
         except Exception as exc:
+            finished.set()
+            heartbeat.join()
             if context.lease_lost:
                 self._increment("lease_losses")
                 return
