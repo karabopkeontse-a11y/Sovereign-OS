@@ -78,7 +78,6 @@ def execute_registered_step(
         arguments = validate_tool_input(spec["tool_name"], json.loads(spec["input_json"]))
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise AgentStepExecutionError(400, "Registered tool input is invalid: " + str(exc)) from exc
-    canonical_input = json.dumps(arguments, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     receipt = store.get_step_execution_receipt(workspace.id, selected.id)
     if receipt and (receipt["tool_name"] != spec["tool_name"] or receipt["input_json"] != spec["input_json"]):
         raise AgentStepExecutionError(409, "The registered step changed after its execution receipt was created.")
@@ -138,6 +137,34 @@ def execute_registered_step(
                     "duration_ms": 0, "task_status": store.get_problem(problem.id).status,
                     "reconciled": True,
                 }
+        elif receipt["status"] == "effect_applied":
+            saved_result = json.loads(receipt["result_json"] or "{}")
+            passed, criterion, evidence = verify_workspace_tool(
+                spec["tool_name"], arguments, saved_result, root
+            )
+            current_step = store.get_step(selected.id)
+            if current_step and current_step.status == "running":
+                store.update_step_status(selected.id, "verifying")
+            if current_step and current_step.status in {"running", "verifying"}:
+                store.record_verification(
+                    selected.id, spec["verification_criterion"] or criterion,
+                    "durable receipt recovery and server-side verification", passed, evidence,
+                )
+            store.update_step_execution_receipt(
+                workspace.id, selected.id, "verified" if passed else "failed",
+                result=saved_result, evidence_reference=evidence,
+                error="" if passed else "Recovered tool result failed verification.",
+            )
+            if not passed:
+                raise AgentStepExecutionError(500, "Recovered tool result failed verification.")
+            remaining = store.list_steps(problem.id)
+            if remaining and all(item.status == "verified" for item in remaining):
+                store.complete_problem(problem.id)
+            return {
+                "task_id": problem.id, "step": store.get_step(selected.id).__dict__,
+                "tool_result": saved_result, "verified": True, "duration_ms": 0,
+                "task_status": store.get_problem(problem.id).status, "reconciled": True,
+            }
         elif spec["tool_name"] not in {"workspace.list_files", "workspace.read_file"}:
             raise AgentStepExecutionError(409, "This execution receipt requires manual reconciliation; the tool will not be repeated.")
 
@@ -163,7 +190,7 @@ def execute_registered_step(
     elif receipt["status"] not in {"prepared", "executing"}:
         raise AgentStepExecutionError(409, "This execution receipt is not resumable.")
 
-    started_at = None;
+    started_at = None
     started_clock = None
     run_recorded = False
     input_summary = json.dumps({
@@ -251,23 +278,24 @@ def execute_registered_step(
             except Exception:
                 pass
         current_step = store.get_step(selected.id)
-        if current_step and current_step.status in {"running", "verifying"}:
-            try:
-                if current_step.status == "running":
-                    store.update_step_status(selected.id, "failed")
-                else:
-                    store.record_verification(
-                        selected.id, spec.get("verification_criterion", ""),
-                        "Execution error", False, type(exc).__name__,
-                    )
-            except Exception:
-                pass
-        current_problem = store.get_problem(problem.id)
-        if current_problem and current_problem.status == "running":
-            try:
-                store.set_problem_status(problem.id, "failed")
-            except ValueError:
-                pass
+        if selected.permission_level == "read_only":
+            if current_step and current_step.status in {"running", "verifying"}:
+                try:
+                    if current_step.status == "running":
+                        store.update_step_status(selected.id, "failed")
+                    else:
+                        store.record_verification(
+                            selected.id, spec.get("verification_criterion", ""),
+                            "Execution error", False, type(exc).__name__,
+                        )
+                except Exception:
+                    pass
+            current_problem = store.get_problem(problem.id)
+            if current_problem and current_problem.status == "running":
+                try:
+                    store.set_problem_status(problem.id, "failed")
+                except ValueError:
+                    pass
         raise AgentStepExecutionError(
             500, "Agent tool failed safely: " + type(exc).__name__ + ": " + str(exc)
         ) from exc
