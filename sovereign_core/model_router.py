@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 import os
 import re
 import time
+import random
 from email.utils import parsedate_to_datetime
 
 
@@ -142,7 +143,7 @@ class ModelRouter:
     """Ordered model candidates with provider-level circuit breakers."""
 
     def __init__(self, max_tokens: int = 800, temperature: float = 0.7,
-                 environ=None, clock=None):
+                 environ=None, clock=None, sleeper=None, random_source=None):
         self.env = os.environ if environ is None else environ
         self.max_tokens = int(max_tokens)
         self.temperature = float(temperature)
@@ -155,6 +156,32 @@ class ModelRouter:
         self.checkout_url = self.env.get("SOVEREIGN_PREMIUM_URL", "").strip()
         self.configuration_warnings: list[str] = []
         self._clock = clock or time.monotonic
+        self._sleep = sleeper or time.sleep
+        self._random = random_source or random.random
+        try:
+            self.max_attempts = max(1, min(5, int(
+                self.env.get("SOVEREIGN_MODEL_MAX_ATTEMPTS", "2")
+            )))
+        except (TypeError, ValueError):
+            self.max_attempts = 2
+        try:
+            self.retry_base_seconds = max(0.05, float(
+                self.env.get("SOVEREIGN_MODEL_RETRY_BASE_SECONDS", "0.5")
+            ))
+        except (TypeError, ValueError):
+            self.retry_base_seconds = 0.5
+        try:
+            self.retry_max_seconds = max(self.retry_base_seconds, float(
+                self.env.get("SOVEREIGN_MODEL_RETRY_MAX_SECONDS", "8")
+            ))
+        except (TypeError, ValueError):
+            self.retry_max_seconds = 8.0
+        try:
+            self.total_deadline_seconds = max(1.0, float(
+                self.env.get("SOVEREIGN_MODEL_TOTAL_DEADLINE_SECONDS", "60")
+            ))
+        except (TypeError, ValueError):
+            self.total_deadline_seconds = 60.0
         self._provider_cooldowns: dict[str, tuple[float, str]] = {}
         self._candidate_cooldowns: dict[str, tuple[float, str]] = {}
         self._provider_failures: dict[str, int] = {}
@@ -384,6 +411,49 @@ class ModelRouter:
                 self._clock() + duration, str(exc)[:240]
             )
 
+    @staticmethod
+    def _is_retryable_error(exc: Exception) -> bool:
+        """Only retry transient transport/rate-limit/server failures.
+
+        Model incompatibilities, quota/billing responses (402), auth faults and
+        malformed requests should move to a different candidate or fail fast.
+        """
+        status = _status_code(exc)
+        if status in {408, 409, 425, 429} or (status is not None and status >= 500):
+            return True
+        name = type(exc).__name__.casefold()
+        message = str(exc).casefold()
+        if any(word in name for word in ("timeout", "connection", "ratelimit")):
+            return True
+        return any(marker in message for marker in (
+            "rate limit", "rate_limit", "too many requests",
+            "temporarily unavailable", "service unavailable",
+            "timed out", "connection refused", "connection reset",
+            "connection aborted", "overloaded",
+        ))
+
+    def _retry_wait(self, exc: Exception, retry_number: int,
+                    deadline: float) -> bool:
+        """Wait within the shared request deadline; return False if it cannot fit."""
+        remaining = deadline - self._clock()
+        if remaining <= 0:
+            return False
+        retry_after = _retry_after_seconds(exc)
+        if retry_after is not None:
+            delay = retry_after
+        else:
+            ceiling = min(
+                self.retry_max_seconds,
+                self.retry_base_seconds * (2 ** max(0, retry_number - 1)),
+            )
+            # Full jitter in [0, ceiling] prevents synchronized retry bursts.
+            delay = max(0.0, min(1.0, float(self._random()))) * ceiling
+        if delay >= remaining:
+            return False
+        if delay > 0:
+            self._sleep(delay)
+        return self._clock() < deadline
+
     def _eligible(self, candidate: ModelCandidate) -> tuple[bool, str]:
         now = self._clock()
         key = self._cooldown_key(candidate)
@@ -416,11 +486,7 @@ class ModelRouter:
     def stream(self, messages, max_tokens: int | None = None,
                start_index: int | None = None,
                candidate_indices: list[int] | None = None):
-        """Yield (chunk, model_info, candidate_index) from the first usable stream.
-
-        Fail over only before the first chunk is emitted. Once output is visible,
-        switching providers would splice two different answers together.
-        """
+        """Yield stream chunks; retry only before the first visible chunk."""
         if start_index is None:
             start_index = self.active_index
         failures: list[str] = []
@@ -438,6 +504,7 @@ class ModelRouter:
             order = [index for index in order if index in allowed]
             if not order:
                 raise ModelRoutingError("No permitted model candidate is available for this request.")
+        deadline = self._clock() + self.total_deadline_seconds
         for index in order:
             candidate = self.candidates[index]
             eligible, reason = self._eligible(candidate)
@@ -445,42 +512,49 @@ class ModelRouter:
                 failures.append(f"{candidate.info.label}: skipped: {reason}")
                 continue
             emitted = False
-            try:
-                model = candidate.client
-                if max_tokens is not None:
-                    model = model.bind(max_tokens=int(max_tokens))
-                stream_method = getattr(model, "stream", None)
-                if not callable(stream_method):
-                    raise TypeError(f"{candidate.info.label} does not support streaming.")
-                for chunk in stream_method(messages):
-                    emitted = True
-                    yield chunk, candidate.info, index
-                provider = candidate.info.provider.casefold()
-                self._provider_successes[provider] = self._provider_successes.get(provider, 0) + 1
-                return
-            except GeneratorExit:
-                raise
-            except Exception as exc:
-                if emitted or not is_capacity_error(exc):
+            for attempt in range(1, self.max_attempts + 1):
+                try:
+                    model = candidate.client
+                    if max_tokens is not None:
+                        model = model.bind(max_tokens=int(max_tokens))
+                    stream_method = getattr(model, "stream", None)
+                    if not callable(stream_method):
+                        raise TypeError(f"{candidate.info.label} does not support streaming.")
+                    for chunk in stream_method(messages):
+                        emitted = True
+                        yield chunk, candidate.info, index
+                    provider = candidate.info.provider.casefold()
+                    self._provider_successes[provider] = self._provider_successes.get(provider, 0) + 1
+                    return
+                except GeneratorExit:
                     raise
-                failures.append(f"{candidate.info.label}: {type(exc).__name__}: {exc}")
-                self._record_failure(candidate, exc)
-        detail = "\n".join(failures[-10:])
+                except Exception as exc:
+                    if emitted or not is_capacity_error(exc):
+                        raise
+                    failures.append(
+                        f"{candidate.info.label} attempt {attempt}/{self.max_attempts}: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+                    if (attempt < self.max_attempts
+                            and self._is_retryable_error(exc)
+                            and self._retry_wait(exc, attempt, deadline)):
+                        continue
+                    self._record_failure(candidate, exc)
+                    break
+                if self._clock() >= deadline:
+                    break
+        detail = "\\n".join(failures[-10:])
         raise ModelRoutingError(
             "All configured model options are currently unavailable, cooling down, "
             "or out of quota. Sovereign did not make a paid request. "
-            "Paid providers remain disabled unless explicitly opted in.\nProvider details:\n" + detail,
+            "Paid providers remain disabled unless explicitly opted in.\\nProvider details:\\n" + detail,
             failures=failures, checkout_url=self.checkout_url,
         )
 
     def invoke(self, messages, tools=None, start_index: int | None = None,
                max_tokens: int | None = None, require_vision: bool = False,
                candidate_indices: list[int] | None = None):
-        """Invoke an eligible model, preferring the manually selected model.
-
-        Image requests are restricted to model IDs known to accept visual input;
-        they never fall through to a text-only model.
-        """
+        """Invoke an eligible model with bounded transient retries and failover."""
         if start_index is None:
             start_index = self.active_index
         failures: list[str] = []
@@ -508,42 +582,54 @@ class ModelRouter:
                     "Configure an enabled vision model in your local provider settings; "
                     "text-only models will not receive image data."
                 )
+        deadline = self._clock() + self.total_deadline_seconds
         for index in order:
             candidate = self.candidates[index]
             eligible, reason = self._eligible(candidate)
             if not eligible:
                 failures.append(f"{candidate.info.label}: skipped: {reason}")
                 continue
-            try:
-                model = candidate.client
-                if tools is not None:
-                    model = model.bind_tools(tools)
-                if max_tokens is not None:
-                    model = model.bind(max_tokens=int(max_tokens))
-                result = model.invoke(messages)
-                provider = candidate.info.provider.casefold()
-                self._provider_successes[provider] = self._provider_successes.get(provider, 0) + 1
-                return result, candidate.info, index
-            except Exception as exc:
-                failures.append(f"{candidate.info.label}: {type(exc).__name__}: {exc}")
-                if not is_capacity_error(exc):
-                    raise
-                message = str(exc).casefold()
-                status = _status_code(exc)
-                capability_rejection = status in {400, 409, 422} and any(
-                    marker in message for marker in ("image", "vision", "multimodal", "content type")
-                )
-                if capability_rejection:
-                    self._candidate_cooldowns[self._cooldown_key(candidate)] = (
-                        self._clock() + 300.0, str(exc)[:240]
+            for attempt in range(1, self.max_attempts + 1):
+                try:
+                    model = candidate.client
+                    if tools is not None:
+                        model = model.bind_tools(tools)
+                    if max_tokens is not None:
+                        model = model.bind(max_tokens=int(max_tokens))
+                    result = model.invoke(messages)
+                    provider = candidate.info.provider.casefold()
+                    self._provider_successes[provider] = self._provider_successes.get(provider, 0) + 1
+                    return result, candidate.info, index
+                except Exception as exc:
+                    failures.append(
+                        f"{candidate.info.label} attempt {attempt}/{self.max_attempts}: "
+                        f"{type(exc).__name__}: {exc}"
                     )
-                else:
+                    if not is_capacity_error(exc):
+                        raise
+                    message = str(exc).casefold()
+                    status = _status_code(exc)
+                    capability_rejection = status in {400, 409, 422} and any(
+                        marker in message for marker in ("image", "vision", "multimodal", "content type")
+                    )
+                    if capability_rejection:
+                        self._candidate_cooldowns[self._cooldown_key(candidate)] = (
+                            self._clock() + 300.0, str(exc)[:240]
+                        )
+                        break
+                    if (attempt < self.max_attempts
+                            and self._is_retryable_error(exc)
+                            and self._retry_wait(exc, attempt, deadline)):
+                        continue
                     self._record_failure(candidate, exc)
-        detail = "\n".join(failures[-10:])
+                    break
+                if self._clock() >= deadline:
+                    break
+        detail = "\\n".join(failures[-10:])
         raise ModelRoutingError(
             "All configured model options are currently unavailable, cooling down, "
             "or out of quota. Sovereign did not make a paid request. Wait for a "
             "provider reset or configure another eligible provider. Paid providers "
-            "remain disabled unless explicitly opted in.\nProvider details:\n" + detail,
+            "remain disabled unless explicitly opted in.\\nProvider details:\\n" + detail,
             failures=failures, checkout_url=self.checkout_url,
         )
