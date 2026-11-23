@@ -11,7 +11,7 @@ Each capability must have a real user outcome, permission model, online/offline 
 | Measure | Count |
 |---|---:|
 | Verified / released | 18 |
-| In testing | 0 |
+| In testing | 1 |
 | Planned | 0 |
 | Minimum product target | 200 |
 
@@ -33,6 +33,8 @@ Ten mission-runtime capabilities are now counted as verified based on the user's
 | MISSION-010 | Audited mission lifecycle | Pause, resume, completion, failure and cancellation have durable event history | Workspace-scoped mission control; running changes require lease owner | Offline-capable | MISSION-001 | Verify valid transitions and ordered event history | VERIFIED |
 
 | MISSION-011 | Independent durable mission worker supervisor | Execute claimed missions outside API and browser lifetimes and persist verified outcomes | Workspace-scoped worker identity; explicit executor registration; lease-owner-only lifecycle updates | Offline-capable core; executor declares its own connectivity | MISSION-001 through MISSION-010; explicit executor interface | Result persistence, heartbeat, retry backoff, non-retryable failure, attempt exhaustion, shutdown, workspace isolation; user-reported local acceptance: 8/8 passed (2026-11-23) | VERIFIED |
+
+| MISSION-012 | Permission-aware registered agent step execution and recovery | Execute approved workspace tools once, persist execution intent and reconcile interrupted file operations without overwriting conflicting data | Workspace-scoped task/step; persisted approval for non-read-only actions; registered tools only | Offline-capable workspace tools | MISSION-011; TaskStore; registered workspace tools | Atomic concurrent claim; receipt persistence and replay; crash after note creation; effect-applied recovery; conflicting-file protection; 9 focused tests added, awaiting user execution | TESTING |
 
 ## Mission scheduling
 
