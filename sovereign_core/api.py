@@ -987,19 +987,15 @@ def create_app(db_path=None, router=None, token=None):
                             "Coordinate agents, resolve disagreements and verify the final report.",
                             info.provider, info.model, getattr(info, "runtime", ""),
                         )
-                    discussion = tasks.create_agent_discussion(
-                        workspace.id, payload.message.strip()[:240],
-                        leader["id"], conversation_id,
-                    )
                     memories = state.workspaces.search(
                         workspace.id, payload.message, limit=5
                     )
                     memory_context = "\n".join(
                         "- " + item.content for item in memories
                     ) or "(none)"
-                    run = tasks.create_agent_collaboration_run(
+                    run = tasks.create_agent_collaboration_run_with_discussion(
                         workspace_id=workspace.id,
-                        discussion_id=discussion["id"],
+                        leader_agent_id=leader["id"],
                         task=payload.message,
                         conversation_id=conversation_id,
                         memory_context=memory_context,
