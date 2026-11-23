@@ -1,6 +1,9 @@
 import json
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
+from unittest.mock import patch
 from pathlib import Path
 
 from sovereign_core.agent_execution import AgentStepExecutionError, execute_registered_step
@@ -83,6 +86,40 @@ class RegisteredAgentExecutionServiceTests(unittest.TestCase):
         self.assertEqual(target.read_text(encoding="utf-8"), "# Approved\nPersisted safely.")
         approvals = self.store.list_approval_events(self.workspace.id, problem.id)
         self.assertEqual([event["decision"] for event in approvals], ["approved"])
+
+    def test_concurrent_execution_claims_step_only_once(self):
+        problem, step = self.create_task()
+        entered_tool = Event()
+        release_tool = Event()
+        calls = []
+
+        def blocking_tool(tool_name, arguments, root):
+            calls.append(tool_name)
+            entered_tool.set()
+            self.assertTrue(release_tool.wait(5), "test did not release the first executor")
+            return {"tool": tool_name, "count": 0, "files": []}
+
+        def execute():
+            return execute_registered_step(
+                self.store, self.db_path, self.workspace.id, problem.id, step.id
+            )
+
+        with patch("sovereign_core.agent_execution.execute_workspace_tool", side_effect=blocking_tool):
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                first = pool.submit(execute)
+                self.assertTrue(entered_tool.wait(5), "first executor never entered the tool")
+                second = pool.submit(execute)
+                try:
+                    with self.assertRaises(AgentStepExecutionError) as caught:
+                        second.result(timeout=5)
+                    self.assertEqual(caught.exception.status_code, 409)
+                finally:
+                    release_tool.set()
+                result = first.result(timeout=5)
+
+        self.assertTrue(result["verified"])
+        self.assertEqual(calls, ["workspace.list_files"])
+        self.assertEqual(self.store.get_step(step.id).status, "verified")
 
     def test_unknown_registered_tool_is_rejected_without_execution(self):
         problem, step = self.create_task(tool="shell.execute", arguments={"command": "whoami"})
