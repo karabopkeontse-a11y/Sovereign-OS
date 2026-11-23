@@ -55,27 +55,55 @@ def _status_code(exc: Exception):
 
 
 def is_capacity_error(exc: Exception) -> bool:
-    """Identify provider/model availability failures that justify failover."""
+    """Return whether another configured model/provider is a sensible fallback.
+
+    Authentication and malformed-request errors are configuration/input faults,
+    not capacity faults. They must surface immediately instead of causing a
+    misleading provider cooldown or repeated failover on every request.
+    """
     status = _status_code(exc)
-    if status in {401, 402, 403, 404, 408, 409, 425, 429}:
+    name, message = type(exc).__name__.casefold(), str(exc).casefold()
+
+    # Transient transport/provider failures and explicit quota exhaustion.
+    if status in {402, 408, 409, 425, 429}:
         return True
     if status is not None and status >= 500:
         return True
-    name, message = type(exc).__name__.casefold(), str(exc).casefold()
     if any(word in name for word in ("timeout", "connection", "ratelimit")):
         return True
-    markers = (
+
+    # Model-specific incompatibilities may be resolved by another candidate.
+    model_markers = (
+        "model_not_found", "model not found", "unknown model",
+        "decommissioned", "no endpoints found",
+        "maximum context length", "context_length_exceeded",
+        "context window", "tool calling is not supported",
+        "does not support tool calling", "tool use is not supported",
+        "unsupported tool", "vision is not supported",
+        "image input is not supported", "unsupported image",
+    )
+    if any(marker in message for marker in model_markers):
+        return True
+
+    # Some providers report quota/rate limiting in the body without a useful
+    # status code. Do not include generic "capacity" words from auth errors.
+    quota_markers = (
         "rate limit", "rate_limit", "too many requests", "quota exceeded",
         "insufficient_quota", "resource_exhausted", "tokens per minute",
-        "requests per minute", "capacity", "overloaded", "temporarily unavailable",
-        "service unavailable", "model_not_found", "model not found",
-        "decommissioned", "maximum context length", "context_length_exceeded",
-        "context window", "unauthorized", "invalid api key", "authentication",
-        "timed out", "connection refused", "connection reset", "no endpoints found",
-        "tool calling is not supported", "does not support tool calling",
-        "tool use is not supported", "unsupported tool",
+        "requests per minute", "temporarily unavailable",
+        "service unavailable", "timed out", "connection refused",
+        "connection reset", "overloaded",
     )
-    return any(marker in message for marker in markers)
+    if any(marker in message for marker in quota_markers):
+        return True
+
+    # 404 is only recoverable when it specifically identifies a missing model
+    # or route. A missing endpoint/path is usually a configuration mistake.
+    if status == 404 and any(marker in message for marker in (
+        "model", "endpoint", "deployment", "route"
+    )):
+        return True
+    return False
 
 
 def _retry_after_seconds(exc: Exception) -> float | None:
@@ -335,10 +363,24 @@ class ModelRouter:
         self._provider_failures[provider] = self._provider_failures.get(provider, 0) + 1
         # A bad model ID/tool capability should not disable other models at the
         # same provider; account/auth/quota/network failures should.
-        if status == 404 or "model not found" in str(exc).casefold():
-            self._candidate_cooldowns[self._cooldown_key(candidate)] = (self._clock() + duration, str(exc)[:240])
+        message = str(exc).casefold()
+        candidate_fault = (
+            status == 404 or "model not found" in message
+            or "unknown model" in message or "unsupported tool" in message
+            or "does not support tool" in message
+            or "context_length_exceeded" in message
+            or "maximum context length" in message
+            or "vision is not supported" in message
+            or "unsupported image" in message
+        )
+        if candidate_fault:
+            self._candidate_cooldowns[self._cooldown_key(candidate)] = (
+                self._clock() + duration, str(exc)[:240]
+            )
         else:
-            self._provider_cooldowns[provider] = (self._clock() + duration, str(exc)[:240])
+            self._provider_cooldowns[provider] = (
+                self._clock() + duration, str(exc)[:240]
+            )
 
     def _eligible(self, candidate: ModelCandidate) -> tuple[bool, str]:
         now = self._clock()
