@@ -2016,6 +2016,19 @@ class TaskStore:
             """, (mission_id, workspace_id)).fetchone()
         return self._mission_dict(row)
 
+    def get_mission_job_by_idempotency_key(
+        self, workspace_id: str, idempotency_key: str,
+    ) -> dict | None:
+        key = (idempotency_key or "").strip()
+        if not key:
+            return None
+        with self._connection() as db:
+            row = db.execute("""
+                SELECT * FROM mission_jobs
+                WHERE workspace_id=? AND idempotency_key=?
+            """, (workspace_id, key)).fetchone()
+        return self._mission_dict(row)
+
     def list_mission_jobs(
         self, workspace_id: str, limit: int = 50,
         statuses: list[str] | None = None,
