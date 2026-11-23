@@ -36,7 +36,9 @@ Mission queue, scheduler, and worker capabilities are counted only where their f
 
 | MISSION-012 | Permission-aware registered agent step execution and recovery | Execute approved workspace tools once, persist execution intent and reconcile interrupted file operations without overwriting conflicting data | Workspace-scoped task/step; persisted approval for non-read-only actions; registered tools only | Offline-capable workspace tools | MISSION-011; TaskStore; registered workspace tools | Atomic concurrent claim; receipt persistence and replay; crash after note creation; effect-applied recovery; conflicting-file protection; worker adapter approval enforcement and shutdown replay (4/4); worker heartbeat lease-loss and process-restart reclaim (10/10); service suite (9/9) | VERIFIED |
 
-MISSION-012 is VERIFIED from the user's reported focused local acceptance results on 2026-11-23: execution service 9/9, registered-agent worker integration 4/4, and worker supervisor/recovery 10/10. The lease-loss test confirms a stale worker cannot persist its result after losing heartbeat ownership; the restart test confirms a new worker reclaims an expired lease and completes the existing mission. This is not a full-repository test claim.\n\n## Mission scheduling
+MISSION-012 is VERIFIED from the user's reported focused local acceptance results on 2026-11-23: execution service 9/9, registered-agent worker integration 4/4, and worker supervisor/recovery 10/10. The lease-loss test confirms a stale worker cannot persist its result after losing heartbeat ownership; the restart test confirms a new worker reclaims an expired lease and completes the existing mission. This is not a full-repository test claim.
+
+## Mission scheduling
 
 | Stable ID | Capability | User outcome | Permissions | Connectivity | Dependencies | Verification / tests | Status |
 |---|---|---|---|---|---|---|---|
