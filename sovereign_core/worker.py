@@ -73,6 +73,7 @@ class MissionWorkerSupervisor:
         retry_max_seconds: float = 900.0,
         stop_event: threading.Event | None = None,
         clock: Callable[[], datetime] | None = None,
+        payload_kind: str | None = None,
     ) -> None:
         if not callable(executor):
             raise ValueError("An explicit mission executor callable is required")
@@ -98,6 +99,13 @@ class MissionWorkerSupervisor:
         self.batch_limit = int(batch_limit)
         self.retry_base_seconds = float(retry_base_seconds)
         self.retry_max_seconds = float(retry_max_seconds)
+        self.payload_kind = (
+            str(payload_kind).strip() if payload_kind is not None else None
+        )
+        if self.payload_kind is not None and (
+            not self.payload_kind or len(self.payload_kind) > 80
+        ):
+            raise ValueError("payload_kind must contain 1 to 80 characters")
         self.stop_event = stop_event or threading.Event()
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self._lock = threading.Lock()
@@ -211,7 +219,9 @@ class MissionWorkerSupervisor:
                 if self.stop_event.is_set():
                     break
                 job = self.store.claim_mission_job(
-                    workspace.id, self.worker_id, lease_seconds=self.lease_seconds
+                    workspace.id, self.worker_id,
+                    lease_seconds=self.lease_seconds,
+                    payload_kind=self.payload_kind,
                 )
                 if not job:
                     break
