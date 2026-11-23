@@ -1189,9 +1189,16 @@ class TaskStore:
         except (TypeError, ValueError) as exc:
             raise ValueError("Mission payload must be JSON serializable") from exc
         now = _now()
-        due = scheduled_at or now
-        if not isinstance(due, str) or not due.strip():
+        due_input = scheduled_at or now
+        if not isinstance(due_input, str) or not due_input.strip():
             raise ValueError("scheduled_at must be a non-empty ISO timestamp")
+        try:
+            parsed_due = datetime.fromisoformat(due_input.replace("Z", "+00:00"))
+            if parsed_due.tzinfo is None:
+                parsed_due = parsed_due.replace(tzinfo=timezone.utc)
+            due = parsed_due.astimezone(timezone.utc).isoformat()
+        except (TypeError, ValueError) as exc:
+            raise ValueError("scheduled_at must be a valid ISO timestamp") from exc
         status = "scheduled" if due > now else "queued"
         mission_id = str(uuid4())
         with self._connection() as db:
