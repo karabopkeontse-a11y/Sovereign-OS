@@ -68,7 +68,116 @@ def candidate(provider, model, outcome):
     return ModelCandidate(ModelInfo(provider, model, "cloud"), FakeClient(outcome))
 
 
+
+class SequenceInvokeBound:
+    def __init__(self, outcomes):
+        self.outcomes = list(outcomes)
+        self.calls = 0
+
+    def invoke(self, messages):
+        self.calls += 1
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
+class SequenceInvokeClient:
+    def __init__(self, outcomes):
+        self.bound = SequenceInvokeBound(outcomes)
+
+    def bind_tools(self, tools):
+        return self.bound
+
+
+class SequenceStreamClient:
+    def __init__(self, outcomes):
+        self.outcomes = list(outcomes)
+        self.calls = 0
+
+    def bind(self, **kwargs):
+        return self
+
+    def stream(self, messages):
+        self.calls += 1
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        for item in outcome:
+            if isinstance(item, Exception):
+                raise item
+            yield item
+
+
 class ModelRouterTests(unittest.TestCase):
+
+    def test_invoke_retries_transient_failure_with_injected_backoff(self):
+        clock = FakeClock()
+        waits = []
+        client = SequenceInvokeClient([FakeError("rate limit"), "recovered"])
+        router = ModelRouter(
+            environ={"SOVEREIGN_MODEL_MAX_ATTEMPTS": "3",
+                     "SOVEREIGN_MODEL_RETRY_BASE_SECONDS": "2"},
+            clock=clock,
+            sleeper=lambda delay: (waits.append(delay), clock.advance(delay)),
+            random_source=lambda: 0.5,
+        )
+        router.candidates = [ModelCandidate(ModelInfo("Provider A", "model-a", "cloud"), client)]
+        result, info, index = router.invoke([], tools=[])
+        self.assertEqual(result, "recovered")
+        self.assertEqual(info.provider, "Provider A")
+        self.assertEqual(index, 0)
+        self.assertEqual(client.bound.calls, 2)
+        self.assertEqual(waits, [1.0])
+
+    def test_invoke_does_not_retry_authentication_or_bad_request(self):
+        class HttpError(Exception):
+            status_code = 401
+
+        client = SequenceInvokeClient([HttpError("invalid API key"), "must not run"])
+        router = ModelRouter(
+            environ={"SOVEREIGN_MODEL_MAX_ATTEMPTS": "4"},
+            sleeper=lambda delay: self.fail("non-transient error must not sleep"),
+        )
+        router.candidates = [ModelCandidate(ModelInfo("Provider A", "model-a", "cloud"), client)]
+        with self.assertRaises(HttpError):
+            router.invoke([], tools=[])
+        self.assertEqual(client.bound.calls, 1)
+
+    def test_retry_respects_deadline_and_does_not_sleep_past_it(self):
+        clock = FakeClock()
+        waits = []
+        client = SequenceInvokeClient([FakeError("rate limit"), "must not run"])
+        router = ModelRouter(
+            environ={"SOVEREIGN_MODEL_MAX_ATTEMPTS": "3",
+                     "SOVEREIGN_MODEL_TOTAL_DEADLINE_SECONDS": "1",
+                     "SOVEREIGN_MODEL_RETRY_BASE_SECONDS": "4"},
+            clock=clock,
+            sleeper=lambda delay: (waits.append(delay), clock.advance(delay)),
+            random_source=lambda: 1.0,
+        )
+        router.candidates = [ModelCandidate(ModelInfo("Provider A", "model-a", "cloud"), client)]
+        with self.assertRaises(ModelRoutingError):
+            router.invoke([], tools=[])
+        self.assertEqual(client.bound.calls, 1)
+        self.assertEqual(waits, [])
+
+    def test_stream_retries_only_before_first_chunk(self):
+        clock = FakeClock()
+        waits = []
+        client = SequenceStreamClient([FakeError("rate limit"), ["recovered"]])
+        router = ModelRouter(
+            environ={"SOVEREIGN_MODEL_MAX_ATTEMPTS": "3"},
+            clock=clock,
+            sleeper=lambda delay: (waits.append(delay), clock.advance(delay)),
+            random_source=lambda: 0.0,
+        )
+        router.candidates = [ModelCandidate(ModelInfo("Provider A", "model-a", "cloud"), client)]
+        chunks = list(router.stream([]))
+        self.assertEqual([item[0] for item in chunks], ["recovered"])
+        self.assertEqual(client.calls, 2)
+        self.assertEqual(len(waits), 1)
+
     def test_quota_errors_are_classified(self):
         self.assertTrue(is_capacity_error(FakeError("quota")))
         self.assertTrue(is_capacity_error(RuntimeError("rate limit exceeded")))
