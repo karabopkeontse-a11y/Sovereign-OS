@@ -144,6 +144,32 @@ class ModelRouterTests(unittest.TestCase):
             router.invoke([], tools=[])
         self.assertEqual(client.bound.calls, 1)
 
+
+    def test_retry_after_header_overrides_exponential_backoff(self):
+        class RetryAfterError(Exception):
+            status_code = 429
+
+            def __init__(self):
+                super().__init__("rate limit")
+                self.response = type("Response", (), {
+                    "headers": {"retry-after": "3"}
+                })()
+
+        clock = FakeClock()
+        waits = []
+        client = SequenceInvokeClient([RetryAfterError(), "recovered"])
+        router = ModelRouter(
+            environ={"SOVEREIGN_MODEL_MAX_ATTEMPTS": "2",
+                     "SOVEREIGN_MODEL_RETRY_BASE_SECONDS": "0.1"},
+            clock=clock,
+            sleeper=lambda delay: (waits.append(delay), clock.advance(delay)),
+            random_source=lambda: 0.0,
+        )
+        router.candidates = [ModelCandidate(ModelInfo("Provider A", "model-a", "cloud"), client)]
+        result, _, _ = router.invoke([], tools=[])
+        self.assertEqual(result, "recovered")
+        self.assertEqual(waits, [3.0])
+
     def test_retry_respects_deadline_and_does_not_sleep_past_it(self):
         clock = FakeClock()
         waits = []
