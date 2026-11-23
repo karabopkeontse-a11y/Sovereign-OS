@@ -147,6 +147,67 @@ class MissionWorkerSupervisorTests(unittest.TestCase):
         self.assertIsNone(saved["heartbeat_at"])
         self.assertEqual(saved["status"], "completed")
 
+    def test_heartbeat_failure_prevents_stale_worker_completion(self):
+        job = self.store.create_mission_job(
+            self.workspace.id, "Lease lost task", {}, max_attempts=2
+        )
+
+        def heartbeat_failure(*_args, **_kwargs):
+            raise RuntimeError("simulated lease ownership loss")
+
+        self.store.heartbeat_mission_job = heartbeat_failure
+
+        def executor(_job, context):
+            self.assertTrue(context.lease_lost_event.wait(timeout=1))
+            return {"must_not_complete": True}
+
+        worker = MissionWorkerSupervisor(
+            self.store, executor, worker_id="worker-lease-lost",
+            lease_seconds=10, heartbeat_interval_seconds=0.01,
+        )
+        worker.run_once()
+
+        saved = self.store.get_mission_job(self.workspace.id, job["id"])
+        self.assertEqual(saved["status"], "running")
+        self.assertIsNone(saved["result"])
+        self.assertEqual(worker.health()["heartbeat_failures"], 1)
+        self.assertEqual(worker.health()["lease_losses"], 1)
+
+    def test_new_worker_reclaims_expired_lease_after_process_restart(self):
+        job = self.store.create_mission_job(
+            self.workspace.id, "Recover after restart", {}, max_attempts=3
+        )
+        claimed = self.store.claim_mission_job(
+            self.workspace.id, "worker-before-restart", lease_seconds=10
+        )
+        self.assertEqual(claimed["id"], job["id"])
+
+        expired_at = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+        with self.store._connection() as db:
+            db.execute(
+                "UPDATE mission_jobs SET lease_expires_at=? WHERE id=?",
+                (expired_at, job["id"]),
+            )
+
+        restarted_store = TaskStore(Path(self.temp.name) / "worker.sqlite3")
+        worker = MissionWorkerSupervisor(
+            restarted_store,
+            lambda _job, _context: {"recovered": True},
+            worker_id="worker-after-restart",
+        )
+        worker.run_once()
+
+        saved = restarted_store.get_mission_job(self.workspace.id, job["id"])
+        self.assertEqual(saved["status"], "completed")
+        self.assertEqual(saved["attempts"], 2)
+        self.assertEqual(saved["result"], {"recovered": True})
+        event_types = [
+            event["event_type"] for event in
+            restarted_store.list_mission_job_events(self.workspace.id, job["id"])
+        ]
+        self.assertIn("lease_reclaimed", event_types)
+        self.assertEqual(event_types[-1], "completed")
+
     def test_shutdown_stops_claiming_after_current_executor_returns(self):
         self.store.create_mission_job(self.workspace.id, "First", {})
         self.store.create_mission_job(self.workspace.id, "Second", {})
