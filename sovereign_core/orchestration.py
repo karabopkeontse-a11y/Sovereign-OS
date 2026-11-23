@@ -15,6 +15,8 @@ def _get(item, key, default=None):
 
 def _content(response):
     value = getattr(response, "content", response)
+    if value is None:
+        return ""
     return value if isinstance(value, str) else str(value)
 
 
