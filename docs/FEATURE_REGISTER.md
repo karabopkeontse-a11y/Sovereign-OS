@@ -10,27 +10,27 @@ Each capability must have a real user outcome, permission model, online/offline 
 
 | Measure | Count |
 |---|---:|
-| Verified / released | 0 |
-| In testing | 10 |
+| Verified / released | 10 |
+| In testing | 0 |
 | Planned | 0 |
 | Minimum product target | 200 |
 
-These are capability records, not a claim that the 200-capability target has been delivered.
+Ten mission-runtime capabilities are now counted as verified based on the user's reported focused local acceptance tests (collaboration recovery 9/9 and mission runtime 10/10). The 200-capability target remains in progress.
 
 ## Mission runtime
 
 | Stable ID | Capability | User outcome | Permissions | Connectivity | Dependencies | Verification / tests | Status |
 |---|---|---|---|---|---|---|---|
-| MISSION-001 | Durable mission creation | Save a mission so it survives closing the browser or restarting the app | Workspace-scoped mission-create permission | Offline-capable | SQLite mission store | Reopen store and retrieve same mission | TESTING |
-| MISSION-002 | Mission idempotency | Repeated submissions do not create duplicate jobs | Same workspace and idempotency key | Offline-capable | MISSION-001 | Replay same key; reject changed input | TESTING |
-| MISSION-003 | Workspace-isolated mission records | Users see and operate only missions in the active workspace | Workspace membership | Offline-capable | Workspace store | Cross-workspace retrieval returns no record | TESTING |
-| MISSION-004 | Scheduled eligibility | Future missions are not claimed before their due time | Mission-create permission | Offline-capable | Durable timestamps | Future-dated job remains unclaimed | TESTING |
-| MISSION-005 | Priority-aware queue ordering | Higher-priority eligible work is claimed first | Worker permission | Offline-capable | MISSION-001 | Competing eligible jobs claim in priority order | TESTING |
-| MISSION-006 | Atomic worker claims | Concurrent workers cannot execute the same queued mission | Worker identity | Offline-capable | SQLite transactional claim | Concurrent claim test yields one winner | TESTING |
-| MISSION-007 | Worker lease and heartbeat | A worker can prove it is still responsible for a running mission | Lease-owner identity | Offline-capable | MISSION-006 | Heartbeat extends lease; foreign worker is rejected | TESTING |
-| MISSION-008 | Expired-lease recovery | Work can be reclaimed after worker or process interruption | Worker identity | Offline-capable | MISSION-007 | Restart store and reclaim expired lease | TESTING |
-| MISSION-009 | Bounded mission attempts | Interrupted work cannot retry forever | Mission policy | Offline-capable | MISSION-008 | Exhausted expired lease becomes failed | TESTING |
-| MISSION-010 | Audited mission lifecycle | Pause, resume, completion, failure and cancellation have durable event history | Workspace-scoped mission control; running changes require lease owner | Offline-capable | MISSION-001 | Verify valid transitions and ordered event history | TESTING |
+| MISSION-001 | Durable mission creation | Save a mission so it survives closing the browser or restarting the app | Workspace-scoped mission-create permission | Offline-capable | SQLite mission store | Reopen store and retrieve same mission | VERIFIED |
+| MISSION-002 | Mission idempotency | Repeated submissions do not create duplicate jobs | Same workspace and idempotency key | Offline-capable | MISSION-001 | Replay same key; reject changed input | VERIFIED |
+| MISSION-003 | Workspace-isolated mission records | Users see and operate only missions in the active workspace | Workspace membership | Offline-capable | Workspace store | Cross-workspace retrieval returns no record | VERIFIED |
+| MISSION-004 | Scheduled eligibility | Future missions are not claimed before their due time | Mission-create permission | Offline-capable | Durable timestamps | Future-dated job remains unclaimed | VERIFIED |
+| MISSION-005 | Priority-aware queue ordering | Higher-priority eligible work is claimed first | Worker permission | Offline-capable | MISSION-001 | Competing eligible jobs claim in priority order | VERIFIED |
+| MISSION-006 | Atomic worker claims | Concurrent workers cannot execute the same queued mission | Worker identity | Offline-capable | SQLite transactional claim | Concurrent claim test yields one winner | VERIFIED |
+| MISSION-007 | Worker lease and heartbeat | A worker can prove it is still responsible for a running mission | Lease-owner identity | Offline-capable | MISSION-006 | Heartbeat extends lease; foreign worker is rejected | VERIFIED |
+| MISSION-008 | Expired-lease recovery | Work can be reclaimed after worker or process interruption | Worker identity | Offline-capable | MISSION-007 | Restart store and reclaim expired lease | VERIFIED |
+| MISSION-009 | Bounded mission attempts | Interrupted work cannot retry forever | Mission policy | Offline-capable | MISSION-008 | Exhausted expired lease becomes failed | VERIFIED |
+| MISSION-010 | Audited mission lifecycle | Pause, resume, completion, failure and cancellation have durable event history | Workspace-scoped mission control; running changes require lease owner | Offline-capable | MISSION-001 | Verify valid transitions and ordered event history | VERIFIED |
 
 ## Backlog policy
 
