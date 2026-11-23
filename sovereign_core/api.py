@@ -1368,6 +1368,16 @@ def create_app(
         if step_index is None:
             raise HTTPException(404, "Plan step not found in this task")
         step = ordered_steps[step_index]
+        idempotency_key = "registered-agent-step:" + problem.id + ":" + step.id
+        existing_mission = tasks.get_mission_job_by_idempotency_key(
+            workspace.id, idempotency_key
+        )
+        if existing_mission is not None:
+            return {
+                "mission": existing_mission,
+                "worker_enabled": bool(enable_mission_worker),
+                "note": "Returning the existing idempotent mission; no duplicate was created.",
+            }
         if any(item.status != "verified" for item in ordered_steps[:step_index]):
             raise HTTPException(409, "Earlier plan steps must be verified before this step can be queued.")
         if problem.status in {"blocked", "failed", "completed", "cancelled"}:
@@ -1392,7 +1402,7 @@ def create_app(
                     "problem_id": problem.id,
                     "step_id": step.id,
                 },
-                idempotency_key="registered-agent-step:" + problem.id + ":" + step.id,
+                idempotency_key=idempotency_key,
                 max_attempts=3,
             )
         except ValueError as exc:
