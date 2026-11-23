@@ -484,14 +484,57 @@ def _execute_collaboration_run(state, workspace_id: str, run_id: str) -> None:
 
 
 
-def create_app(db_path=None, router=None, token=None):
+def create_app(
+    db_path=None, router=None, token=None, *,
+    enable_mission_worker=False, mission_worker_poll_seconds=1.0,
+):
     state = SovereignAPI(db_path or os.getenv("SOVEREIGN_DB_PATH",
                           "sovereign_workspace/sovereign_tasks.sqlite3"), router)
     expected_token = token if token is not None else os.getenv("SOVEREIGN_API_TOKEN", "")
+    mission_runtime = {"worker": None, "thread": None, "stop_event": None}
+
     @asynccontextmanager
     async def lifespan(app):
         app.state.sovereign = state
-        yield
+        app.state.mission_worker = None
+        if enable_mission_worker:
+            from .agent_execution import registered_agent_step_executor
+            from .worker import MissionWorkerSupervisor
+
+            stop_event = threading.Event()
+            executor = registered_agent_step_executor(
+                state.workspaces.tasks, state.db_path
+            )
+            supervisor = MissionWorkerSupervisor(
+                state.workspaces.tasks,
+                executor,
+                worker_id="api-registered-agent-" + uuid4().hex[:12],
+                poll_interval_seconds=mission_worker_poll_seconds,
+                stop_event=stop_event,
+                payload_kind="registered_agent_step",
+            )
+            thread = threading.Thread(
+                target=supervisor.run_forever,
+                name="SovereignOS-Mission-Worker",
+                daemon=True,
+            )
+            mission_runtime.update(
+                worker=supervisor, thread=thread, stop_event=stop_event
+            )
+            app.state.mission_worker = supervisor
+            thread.start()
+        try:
+            yield
+        finally:
+            stop_event = mission_runtime.get("stop_event")
+            thread = mission_runtime.get("thread")
+            if stop_event is not None:
+                stop_event.set()
+            if thread is not None:
+                thread.join(timeout=15)
+            mission_runtime.update(worker=None, thread=None, stop_event=None)
+            app.state.mission_worker = None
+
     app = FastAPI(title="SovereignOS API", version="1.0.0", lifespan=lifespan)
     origins = [x.strip() for x in os.getenv("SOVEREIGN_API_CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173,http://localhost:8080,http://127.0.0.1:8080").split(",") if x.strip()]
     if origins:
@@ -1296,6 +1339,85 @@ def create_app(db_path=None, router=None, token=None):
                 "steps": [step.__dict__ for step in tasks.list_steps(problem.id)],
                 "tool_specs": tasks.list_step_specs(problem.id),
                 "approval_events": tasks.list_approval_events(workspace.id, problem.id)}
+
+    @app.get("/api/v1/mission-worker/health", dependencies=[Depends(authorize)])
+    def mission_worker_health():
+        worker = mission_runtime.get("worker")
+        if worker is None:
+            return {"enabled": False, "state": "disabled"}
+        return {"enabled": True, **worker.health()}
+
+    @app.post(
+        "/api/v1/workspaces/{workspace_id}/agent/tasks/{problem_id}/steps/{step_id}/enqueue",
+        status_code=202, dependencies=[Depends(authorize)],
+    )
+    def enqueue_registered_agent_step(workspace_id: str, problem_id: str, step_id: str):
+        try:
+            workspace = state.workspaces.get_workspace(workspace_id)
+        except ValueError:
+            raise HTTPException(404, "Workspace not found")
+        tasks = state.workspaces.tasks
+        problem = tasks.get_problem(problem_id)
+        if not problem or problem.workspace_id != workspace.id:
+            raise HTTPException(404, "Task not found in this workspace")
+        step = next((item for item in tasks.list_steps(problem.id) if item.id == step_id), None)
+        if step is None:
+            raise HTTPException(404, "Plan step not found in this task")
+        if problem.status in {"blocked", "failed", "completed", "cancelled"}:
+            raise HTTPException(409, "This task is closed to further execution.")
+        if step.status not in {"planned", "approved"}:
+            raise HTTPException(409, "Only planned or approved steps can be queued.")
+        spec = tasks.get_step_spec(step.id)
+        if not spec or spec.get("tool_name") not in AGENT_TOOLS:
+            raise HTTPException(403, "Only registered workspace-tool steps can be queued.")
+        if step.permission_level != "read_only" and step.status != "approved":
+            raise HTTPException(403, "This step requires persisted human approval before it can be queued.")
+        try:
+            validate_tool_input(spec["tool_name"], json.loads(spec["input_json"]))
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise HTTPException(422, "Registered tool input is invalid: " + str(exc)) from exc
+        try:
+            mission = tasks.create_mission_job(
+                workspace.id,
+                (problem.title + ": " + step.action)[:240],
+                {
+                    "kind": "registered_agent_step",
+                    "problem_id": problem.id,
+                    "step_id": step.id,
+                },
+                idempotency_key="registered-agent-step:" + problem.id + ":" + step.id,
+                max_attempts=3,
+            )
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        return {
+            "mission": mission,
+            "worker_enabled": bool(enable_mission_worker),
+            "note": "Mission persisted in the workspace queue. Only the registered-agent worker can claim this mission type.",
+        }
+
+    @app.get("/api/v1/workspaces/{workspace_id}/missions", dependencies=[Depends(authorize)])
+    def list_workspace_missions(workspace_id: str):
+        try:
+            workspace = state.workspaces.get_workspace(workspace_id)
+        except ValueError:
+            raise HTTPException(404, "Workspace not found")
+        return {"missions": state.workspaces.tasks.list_mission_jobs(workspace.id, limit=100)}
+
+    @app.get("/api/v1/workspaces/{workspace_id}/missions/{mission_id}", dependencies=[Depends(authorize)])
+    def get_workspace_mission(workspace_id: str, mission_id: str):
+        try:
+            workspace = state.workspaces.get_workspace(workspace_id)
+        except ValueError:
+            raise HTTPException(404, "Workspace not found")
+        tasks = state.workspaces.tasks
+        mission = tasks.get_mission_job(workspace.id, mission_id)
+        if mission is None:
+            raise HTTPException(404, "Mission not found in this workspace")
+        return {
+            "mission": mission,
+            "events": tasks.list_mission_job_events(workspace.id, mission_id),
+        }
 
     @app.post("/api/v1/workspaces/{workspace_id}/agent/tasks/{problem_id}/execute-next", dependencies=[Depends(authorize)])
     def execute_next_agent_step(
