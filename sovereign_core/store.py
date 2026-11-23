@@ -490,6 +490,22 @@ class TaskStore:
                 )
             return dict(row)
 
+    def get_agent_collaboration_run_by_request_key(
+        self, workspace_id: str, request_key: str
+    ) -> dict | None:
+        import json
+
+        with self._connection() as db:
+            row = db.execute("""
+                SELECT * FROM agent_collaboration_runs
+                WHERE workspace_id=? AND request_key=?
+            """, (workspace_id, (request_key or "").strip())).fetchone()
+        if not row:
+            return None
+        result = dict(row)
+        result["specialist_ids"] = json.loads(result.pop("specialist_ids_json"))
+        return result
+
     def get_agent_collaboration_run(
         self, workspace_id: str, run_id: str
     ) -> dict | None:
