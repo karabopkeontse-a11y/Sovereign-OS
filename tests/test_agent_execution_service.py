@@ -156,7 +156,7 @@ class RegisteredAgentExecutionServiceTests(unittest.TestCase):
         self.assertEqual(self.store.get_step(step.id).status, "running")
 
         recovered = execute_registered_step(
-            self.store, self.db_path, self.workspace.id, problem.id, step.id,
+            self.store, self.db_path, self.workspace.id, problem.id,
             recover_interrupted=True,
         )
         self.assertTrue(recovered["reconciled"])
