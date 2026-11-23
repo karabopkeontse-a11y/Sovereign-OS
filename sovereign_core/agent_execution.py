@@ -64,7 +64,15 @@ def execute_registered_step(
     else:
         for candidate in steps:
             candidate_spec = store.get_step_spec(candidate.id)
-            if candidate_spec and candidate.status in {"planned", "approved"}:
+            candidate_receipt = (
+                store.get_step_execution_receipt(workspace.id, candidate.id)
+                if recover_interrupted else None
+            )
+            ready = candidate.status in {"planned", "approved"}
+            recoverable = bool(candidate_receipt) and candidate.status in {
+                "running", "verifying", "blocked", "verified"
+            }
+            if candidate_spec and (ready or recoverable):
                 selected, spec = candidate, candidate_spec
                 break
 
@@ -123,6 +131,13 @@ def execute_registered_step(
                     spec["tool_name"], arguments, reconciled_result, root
                 )
                 current_step = store.get_step(selected.id)
+                if current_step and current_step.status == "blocked":
+                    store.update_step_status(selected.id, "planned")
+                    store.update_step_status(selected.id, "running")
+                    current_step = store.get_step(selected.id)
+                elif current_step and current_step.status == "planned":
+                    store.update_step_status(selected.id, "running")
+                    current_step = store.get_step(selected.id)
                 if current_step and current_step.status == "running":
                     store.update_step_status(selected.id, "verifying")
                 if current_step and current_step.status in {"running", "verifying"}:
