@@ -20,7 +20,7 @@ class MissionRuntimeStoreTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def test_schema_v7_preserves_plugin_collaboration_and_mission_tables(self):
+    def test_schema_v8_preserves_plugin_collaboration_and_mission_tables(self):
         with closing(sqlite3.connect(self.db_path)) as db:
             version = db.execute(
                 "SELECT MAX(version) FROM schema_migrations"
@@ -30,13 +30,15 @@ class MissionRuntimeStoreTests(unittest.TestCase):
                     "SELECT name FROM sqlite_master WHERE type='table'"
                 )
             }
-        self.assertEqual(version, 7)
+        self.assertEqual(version, 8)
         self.assertTrue({
             "plugins", "workspace_metadata", "workspace_plugins",
             "agent_discussions", "agent_collaboration_runs",
             "agent_collaboration_checkpoints", "mission_jobs",
             "mission_job_events", "mission_schedules",
             "mission_schedule_events",
+            "mission_recurring_schedules", "mission_recurring_occurrences",
+            "mission_recurring_schedule_events",
         }.issubset(tables))
 
     def test_schedule_creation_is_idempotent_and_workspace_scoped(self):
@@ -332,8 +334,6 @@ class MissionRuntimeStoreTests(unittest.TestCase):
             )
 
 
-if __name__ == "__main__":
-    unittest.main()
 
     def test_schema_v8_adds_recurring_schedules_without_losing_existing_tables(self):
         with closing(sqlite3.connect(self.db_path)) as db:
@@ -469,3 +469,6 @@ if __name__ == "__main__":
         )
         self.assertEqual(self.store.list_mission_jobs(self.workspace.id), [])
 
+
+if __name__ == "__main__":
+    unittest.main()
