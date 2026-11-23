@@ -72,25 +72,19 @@ Every catalog item must have a clear user outcome, permission model, online/offl
 
 ### Milestone B — Sovereign Mission Runtime
 
-**Phase 1 — Persistent mission queue (implementation committed; local acceptance validation pending):**
+**Phase 1 — Persistent mission queue (implementation committed; focused local acceptance tests passed 2026-11-23):**
 - Schema v6 adds workspace-scoped mission jobs and append-only mission event history without replacing existing plugin/workspace/collaboration tables.
 - Mission creation supports idempotency keys, JSON payloads, scheduled timestamps, priority and bounded attempt budgets.
 - Atomic worker claims prevent duplicate concurrent execution; worker leases and heartbeats identify ownership.
 - Expired leases can be reclaimed after a process/worker interruption; exhausted jobs transition to failed rather than remaining stuck as running.
 - Guarded lifecycle transitions cover pause, resume, retryable, completion, failure and cancellation.
 - Persistence acceptance tests cover migration preservation, idempotency, workspace isolation, due-time gating, concurrent claims, restart recovery, exhausted leases, heartbeat ownership and lifecycle audit events.
-- This phase is not counted as verified until the user runs the focused unittest suite successfully.
+- Local acceptance evidence reported by the user on 2026-11-23: collaboration recovery 9/9 and mission runtime 10/10 passed. Orchestration 7/7 had passed at the previous checkpoint. Phase 1 is validated against these focused suites; this is not a claim that the full repository suite passed.
 
 **Phase 2 — Scheduler and execution supervision:**
 - Durable one-time, recurring, event-triggered, and user-triggered scheduling.
 - Separate execution from web request lifetime.
 - Per-stage deadlines, heartbeat/lease supervision, cancellation, pause/resume, resource limits, and graceful shutdown.
-- Persisted plans, tool calls, outputs, artifacts, evidence, approvals, and audit events.
-- Morning report generator and notification delivery.
-- Local-first execution and explicit online-provider fallback policies.
-- Durable job queue and scheduler with one-time, recurring, event-triggered, and user-triggered missions.
-- Separate execution from web request lifetime.
-- Per-stage deadlines, heartbeat/lease handling, cancellation, pause/resume, resource limits, and graceful shutdown.
 - Persisted plans, tool calls, outputs, artifacts, evidence, approvals, and audit events.
 - Morning report generator and notification delivery.
 - Local-first execution and explicit online-provider fallback policies.
@@ -153,7 +147,7 @@ The user confirmed commit 17223a3 was pushed successfully. Subsequent GitHub edi
 3. Run focused unittest suites: collaboration recovery, orchestration, API; run Python compile checks and node --check.
 4. Fix failures one at a time and rerun affected tests.
 5. Finish automatic retry/backoff and restart/lease recovery.
-6. Start the durable mission scheduler/runtime as the next major product capability.
+6. Phase 1 is validated by focused local tests. Proceed to Phase 2 with a narrow, test-first scheduler/execution-supervisor slice.
 
 ## 8. Product acceptance standard
 
