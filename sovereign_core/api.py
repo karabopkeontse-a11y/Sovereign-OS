@@ -1005,14 +1005,16 @@ def create_app(db_path=None, router=None, token=None):
                         max_agents=payload.max_agents,
                         request_key=request_key,
                     )
-            if run["status"] in {"queued", "retryable"}:
-                if run["status"] == "retryable":
+            if run["status"] in {"queued", "retryable", "running"}:
+                with _collaboration_active_lock:
+                    worker_active = run["id"] in _collaboration_active_runs
+                if not worker_active:
                     tasks.update_agent_collaboration_run(
                         workspace.id, run["id"], status="queued", last_error=""
                     )
-                _schedule_collaboration_run(
-                    background_tasks, state, workspace.id, run["id"]
-                )
+                    _schedule_collaboration_run(
+                        background_tasks, state, workspace.id, run["id"]
+                    )
             return {
                 "run_id": run["id"],
                 "workspace_id": workspace.id,
@@ -1044,12 +1046,19 @@ def create_app(db_path=None, router=None, token=None):
     def get_collaboration_run(workspace_id: str, run_id: str):
         try:
             state.workspaces.get_workspace(workspace_id)
-            run = state.workspaces.tasks.get_agent_collaboration_run(
-                workspace_id, run_id
-            )
+            tasks = state.workspaces.tasks
+            run = tasks.get_agent_collaboration_run(workspace_id, run_id)
             if not run:
                 raise HTTPException(404, "Collaboration run not found in this workspace")
-            checkpoints = state.workspaces.tasks.list_agent_collaboration_checkpoints(
+            if run["status"] == "running":
+                with _collaboration_active_lock:
+                    worker_active = run_id in _collaboration_active_runs
+                if not worker_active:
+                    run = tasks.update_agent_collaboration_run(
+                        workspace_id, run_id, status="retryable",
+                        last_error="Worker was interrupted. Completed checkpoints are safe to resume.",
+                    )
+            checkpoints = tasks.list_agent_collaboration_checkpoints(
                 workspace_id, run_id
             )
             return {"run": run, "checkpoints": checkpoints}
@@ -1074,7 +1083,10 @@ def create_app(db_path=None, router=None, token=None):
             if run["status"] == "completed":
                 raise HTTPException(409, "This collaboration run is already completed.")
             if run["status"] == "running":
-                return {"run_id": run_id, "status": "running", "resumed": False}
+                with _collaboration_active_lock:
+                    worker_active = run_id in _collaboration_active_runs
+                if worker_active:
+                    return {"run_id": run_id, "status": "running", "resumed": False}
             tasks.update_agent_collaboration_run(
                 workspace_id, run_id, status="queued", last_error=""
             )
