@@ -32,6 +32,14 @@ Ten mission-runtime capabilities are now counted as verified based on the user's
 | MISSION-009 | Bounded mission attempts | Interrupted work cannot retry forever | Mission policy | Offline-capable | MISSION-008 | Exhausted expired lease becomes failed | VERIFIED |
 | MISSION-010 | Audited mission lifecycle | Pause, resume, completion, failure and cancellation have durable event history | Workspace-scoped mission control; running changes require lease owner | Offline-capable | MISSION-001 | Verify valid transitions and ordered event history | VERIFIED |
 
+## Mission scheduling
+
+| Stable ID | Capability | User outcome | Permissions | Connectivity | Dependencies | Verification / tests | Status |
+|---|---|---|---|---|---|---|---|
+| SCHED-001 | Durable one-time schedule definitions | Save a future mission schedule that survives application restarts | Workspace-scoped mission scheduling permission | Offline-capable | SQLite schedule store | Migration, persistence, workspace isolation, idempotent create | TESTING |
+| SCHED-002 | Timezone-aware one-time scheduling | Schedule a mission using an explicit IANA timezone and UTC offset | Workspace-scoped mission scheduling permission | Offline-capable | SCHED-001; Python zoneinfo and tzdata | Reject naive, unknown, or mismatched timezone inputs; normalize due time to UTC | TESTING |
+| SCHED-003 | Idempotent due-schedule promotion | Convert each due schedule into exactly one existing queue job | Workspace-scoped scheduler/queue permission | Offline-capable | SCHED-001; mission queue | Due gating, atomic concurrent promotion, queue linkage, audit events | TESTING |
+
 ## Backlog policy
 
 - Add a stable ID before implementation; never recycle IDs.

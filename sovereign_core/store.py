@@ -1157,6 +1157,268 @@ class TaskStore:
                 VALUES (6, 'durable_mission_queue', ?)
             """, (_now(),))
 
+        db.executescript("""
+            CREATE TABLE IF NOT EXISTS mission_schedules (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                run_at_utc TEXT NOT NULL,
+                timezone_name TEXT NOT NULL,
+                priority INTEGER NOT NULL DEFAULT 0,
+                max_attempts INTEGER NOT NULL DEFAULT 3
+                    CHECK(max_attempts BETWEEN 1 AND 20),
+                idempotency_key TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'scheduled'
+                    CHECK(status IN ('scheduled','promoted','cancelled')),
+                mission_job_id TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                promoted_at TEXT,
+                UNIQUE(id, workspace_id),
+                FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+                FOREIGN KEY(mission_job_id, workspace_id)
+                    REFERENCES mission_jobs(id, workspace_id)
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_mission_schedules_idempotency
+                ON mission_schedules(workspace_id, idempotency_key);
+            CREATE INDEX IF NOT EXISTS idx_mission_schedules_due
+                ON mission_schedules(workspace_id, status, run_at_utc);
+
+            CREATE TABLE IF NOT EXISTS mission_schedule_events (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                schedule_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                detail TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(schedule_id, workspace_id)
+                    REFERENCES mission_schedules(id, workspace_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_mission_schedule_events_schedule
+                ON mission_schedule_events(workspace_id, schedule_id, created_at);
+        """)
+        version = db.execute(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations"
+        ).fetchone()[0]
+        if version < 7:
+            db.execute("""
+                INSERT INTO schema_migrations(version, name, applied_at)
+                VALUES (7, 'durable_one_time_mission_schedules', ?)
+            """, (_now(),))
+
+    def create_mission_schedule(
+        self, workspace_id: str, title: str, payload: dict | None,
+        run_at: str, timezone_name: str = "UTC", priority: int = 0,
+        max_attempts: int = 3, idempotency_key: str = "",
+    ) -> dict:
+        """Create a one-time schedule using an explicit timezone-aware timestamp."""
+        import json
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+        title = (title or "").strip()
+        if not title:
+            raise ValueError("Schedule title is required")
+        if not 1 <= int(max_attempts) <= 20:
+            raise ValueError("max_attempts must be between 1 and 20")
+        if not -100 <= int(priority) <= 100:
+            raise ValueError("Schedule priority must be between -100 and 100")
+        timezone_name = (timezone_name or "").strip()
+        try:
+            zone = ZoneInfo(timezone_name)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise ValueError("timezone_name must be a valid IANA timezone") from exc
+        if not isinstance(run_at, str) or not run_at.strip():
+            raise ValueError("run_at must be a timezone-aware ISO timestamp")
+        try:
+            parsed = datetime.fromisoformat(run_at.replace("Z", "+00:00"))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("run_at must be a valid timezone-aware timestamp") from exc
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise ValueError("run_at must include an explicit UTC offset")
+        if parsed.astimezone(zone).utcoffset() != parsed.utcoffset():
+            raise ValueError("run_at offset does not match timezone_name")
+        due = parsed.astimezone(timezone.utc).isoformat()
+        try:
+            payload_json = json.dumps(payload or {}, sort_keys=True)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Schedule payload must be JSON serializable") from exc
+
+        schedule_id = str(uuid4())
+        key = (idempotency_key or "").strip() or schedule_id
+        if len(key) > 200:
+            raise ValueError("Schedule idempotency key is too long")
+        now = _now()
+        with self._connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            if not db.execute(
+                "SELECT 1 FROM workspaces WHERE id=?", (workspace_id,)
+            ).fetchone():
+                raise ValueError("Workspace does not exist")
+            existing = db.execute("""
+                SELECT * FROM mission_schedules
+                WHERE workspace_id=? AND idempotency_key=?
+            """, (workspace_id, key)).fetchone()
+            if existing:
+                if (existing["title"] != title
+                    or existing["payload_json"] != payload_json
+                    or existing["run_at_utc"] != due
+                    or existing["timezone_name"] != timezone_name
+                    or existing["priority"] != int(priority)
+                    or existing["max_attempts"] != int(max_attempts)):
+                    raise ValueError("Schedule idempotency key was reused with different input")
+                return dict(existing)
+            db.execute("""
+                INSERT INTO mission_schedules (
+                    id, workspace_id, title, payload_json, run_at_utc,
+                    timezone_name, priority, max_attempts, idempotency_key,
+                    status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'scheduled', ?, ?)
+            """, (
+                schedule_id, workspace_id, title, payload_json, due,
+                timezone_name, int(priority), int(max_attempts), key, now, now,
+            ))
+            db.execute("""
+                INSERT INTO mission_schedule_events
+                (id, workspace_id, schedule_id, event_type, detail, created_at)
+                VALUES (?, ?, ?, 'created', ?, ?)
+            """, (str(uuid4()), workspace_id, schedule_id, due, now))
+            row = db.execute("""
+                SELECT * FROM mission_schedules WHERE id=? AND workspace_id=?
+            """, (schedule_id, workspace_id)).fetchone()
+            return dict(row)
+
+    def get_mission_schedule(
+        self, workspace_id: str, schedule_id: str
+    ) -> dict | None:
+        with self._connection() as db:
+            row = db.execute("""
+                SELECT * FROM mission_schedules WHERE id=? AND workspace_id=?
+            """, (schedule_id, workspace_id)).fetchone()
+        return dict(row) if row else None
+
+    def list_mission_schedules(
+        self, workspace_id: str, limit: int = 50,
+        statuses: list[str] | None = None,
+    ) -> list[dict]:
+        allowed = {"scheduled", "promoted", "cancelled"}
+        selected = list(dict.fromkeys(statuses or []))
+        if any(status not in allowed for status in selected):
+            raise ValueError("Unknown mission schedule status filter")
+        sql = "SELECT * FROM mission_schedules WHERE workspace_id=?"
+        params = [workspace_id]
+        if selected:
+            sql += " AND status IN (" + ",".join("?" for _ in selected) + ")"
+            params.extend(selected)
+        sql += " ORDER BY run_at_utc, created_at LIMIT ?"
+        params.append(max(1, min(int(limit), 200)))
+        with self._connection() as db:
+            rows = db.execute(sql, params).fetchall()
+        return [dict(row) for row in rows]
+
+    def promote_due_mission_schedules(
+        self, workspace_id: str, limit: int = 50, now: str | None = None,
+    ) -> list[dict]:
+        """Atomically turn due schedules into queue jobs exactly once."""
+        current = datetime.now(timezone.utc)
+        if now is not None:
+            if not isinstance(now, str):
+                raise ValueError("now must be a valid timezone-aware ISO timestamp")
+            try:
+                current = datetime.fromisoformat(now.replace("Z", "+00:00"))
+            except ValueError as exc:
+                raise ValueError("now must be a valid timezone-aware ISO timestamp") from exc
+            if current.tzinfo is None or current.utcoffset() is None:
+                raise ValueError("now must include an explicit UTC offset")
+            current = current.astimezone(timezone.utc)
+        now_utc = current.isoformat()
+        promoted = []
+        with self._connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            schedules = db.execute("""
+                SELECT * FROM mission_schedules
+                WHERE workspace_id=? AND status='scheduled' AND run_at_utc<=?
+                ORDER BY run_at_utc, created_at, id LIMIT ?
+            """, (workspace_id, now_utc, max(1, min(int(limit), 200)))).fetchall()
+            for schedule in schedules:
+                mission_id = str(uuid4())
+                job_key = "schedule:" + schedule["id"]
+                db.execute("""
+                    INSERT INTO mission_jobs (
+                        id, workspace_id, title, payload_json, status, priority,
+                        idempotency_key, scheduled_at, attempts, max_attempts,
+                        created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, 0, ?, ?, ?)
+                """, (
+                    mission_id, workspace_id, schedule["title"],
+                    schedule["payload_json"], schedule["priority"], job_key,
+                    schedule["run_at_utc"], schedule["max_attempts"], now_utc, now_utc,
+                ))
+                db.execute("""
+                    INSERT INTO mission_job_events
+                    (id, workspace_id, mission_id, event_type, detail, created_at)
+                    VALUES (?, ?, ?, 'created', 'promoted from schedule', ?)
+                """, (str(uuid4()), workspace_id, mission_id, now_utc))
+                db.execute("""
+                    UPDATE mission_schedules
+                    SET status='promoted', mission_job_id=?, promoted_at=?, updated_at=?
+                    WHERE id=? AND workspace_id=? AND status='scheduled'
+                """, (mission_id, now_utc, now_utc, schedule["id"], workspace_id))
+                db.execute("""
+                    INSERT INTO mission_schedule_events
+                    (id, workspace_id, schedule_id, event_type, detail, created_at)
+                    VALUES (?, ?, ?, 'promoted', ?, ?)
+                """, (
+                    str(uuid4()), workspace_id, schedule["id"], mission_id, now_utc,
+                ))
+                job = db.execute("""
+                    SELECT * FROM mission_jobs WHERE id=? AND workspace_id=?
+                """, (mission_id, workspace_id)).fetchone()
+                promoted.append(self._mission_dict(job))
+        return promoted
+
+    def cancel_mission_schedule(
+        self, workspace_id: str, schedule_id: str, detail: str = "",
+    ) -> dict:
+        now = _now()
+        with self._connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("""
+                SELECT * FROM mission_schedules WHERE id=? AND workspace_id=?
+            """, (schedule_id, workspace_id)).fetchone()
+            if not row:
+                raise ValueError("Mission schedule not found in workspace")
+            if row["status"] != "scheduled":
+                raise ValueError("Only pending schedules can be cancelled")
+            db.execute("""
+                UPDATE mission_schedules SET status='cancelled', updated_at=?
+                WHERE id=? AND workspace_id=? AND status='scheduled'
+            """, (now, schedule_id, workspace_id))
+            db.execute("""
+                INSERT INTO mission_schedule_events
+                (id, workspace_id, schedule_id, event_type, detail, created_at)
+                VALUES (?, ?, ?, 'cancelled', ?, ?)
+            """, (str(uuid4()), workspace_id, schedule_id, (detail or "")[:2000], now))
+            updated = db.execute("""
+                SELECT * FROM mission_schedules WHERE id=? AND workspace_id=?
+            """, (schedule_id, workspace_id)).fetchone()
+            return dict(updated)
+
+    def list_mission_schedule_events(
+        self, workspace_id: str, schedule_id: str,
+    ) -> list[dict]:
+        with self._connection() as db:
+            if not db.execute("""
+                SELECT 1 FROM mission_schedules WHERE id=? AND workspace_id=?
+            """, (schedule_id, workspace_id)).fetchone():
+                raise ValueError("Mission schedule not found in workspace")
+            rows = db.execute("""
+                SELECT * FROM mission_schedule_events
+                WHERE workspace_id=? AND schedule_id=?
+                ORDER BY created_at, id
+            """, (workspace_id, schedule_id)).fetchall()
+        return [dict(row) for row in rows]
+
     @staticmethod
     def _mission_dict(row):
         if not row:

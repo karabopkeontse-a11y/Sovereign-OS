@@ -81,8 +81,9 @@ Every catalog item must have a clear user outcome, permission model, online/offl
 - Persistence acceptance tests cover migration preservation, idempotency, workspace isolation, due-time gating, concurrent claims, restart recovery, exhausted leases, heartbeat ownership and lifecycle audit events.
 - Local acceptance evidence reported by the user on 2026-11-23: collaboration recovery 9/9 and mission runtime 10/10 passed. Orchestration 7/7 had passed at the previous checkpoint. Phase 1 is validated against these focused suites; this is not a claim that the full repository suite passed.
 
-**Phase 2 — Scheduler and execution supervision:**
-- Durable one-time, recurring, event-triggered, and user-triggered scheduling.
+**Phase 2 — Scheduler and execution supervision (in progress):**
+- Durable one-time schedules are being added first, with timezone-aware timestamps, auditable lifecycle events, and atomic idempotent promotion into the existing mission queue.
+- Next: recurring, event-triggered, and user-triggered scheduling.
 - Separate execution from web request lifetime.
 - Per-stage deadlines, heartbeat/lease supervision, cancellation, pause/resume, resource limits, and graceful shutdown.
 - Persisted plans, tool calls, outputs, artifacts, evidence, approvals, and audit events.

@@ -38,6 +38,152 @@ class MissionRuntimeStoreTests(unittest.TestCase):
             "mission_job_events",
         }.issubset(tables))
 
+    def test_schema_v7_adds_durable_schedule_tables_without_replacing_queue(self):
+        with closing(sqlite3.connect(self.db_path)) as db:
+            version = db.execute(
+                "SELECT MAX(version) FROM schema_migrations"
+            ).fetchone()[0]
+            tables = {
+                row[0] for row in db.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+        self.assertEqual(version, 7)
+        self.assertTrue({
+            "mission_jobs", "mission_job_events", "mission_schedules",
+            "mission_schedule_events", "plugins", "workspace_plugins",
+            "agent_collaboration_runs",
+        }.issubset(tables))
+
+    def test_schedule_creation_is_idempotent_and_workspace_scoped(self):
+        first = self.store.create_mission_schedule(
+            self.workspace.id, "Morning research", {"topic": "Botswana"},
+            "2026-11-24T08:00:00+02:00", "Africa/Gaborone",
+            idempotency_key="morning-research",
+        )
+        replay = self.store.create_mission_schedule(
+            self.workspace.id, "Morning research", {"topic": "Botswana"},
+            "2026-11-24T08:00:00+02:00", "Africa/Gaborone",
+            idempotency_key="morning-research",
+        )
+        self.assertEqual(first["id"], replay["id"])
+        self.assertEqual(first["status"], "scheduled")
+        self.assertIsNone(
+            self.store.get_mission_schedule(self.other_workspace.id, first["id"])
+        )
+        with self.assertRaisesRegex(ValueError, "different input"):
+            self.store.create_mission_schedule(
+                self.workspace.id, "Changed mission", {"topic": "Botswana"},
+                "2026-11-24T08:00:00+02:00", "Africa/Gaborone",
+                idempotency_key="morning-research",
+            )
+
+    def test_schedule_requires_valid_explicit_timezone_and_offset(self):
+        with self.assertRaisesRegex(ValueError, "timezone-aware"):
+            self.store.create_mission_schedule(
+                self.workspace.id, "Naive", {}, "2026-11-24T08:00:00",
+                "Africa/Gaborone",
+            )
+        with self.assertRaisesRegex(ValueError, "timezone_name"):
+            self.store.create_mission_schedule(
+                self.workspace.id, "Unknown zone", {},
+                "2026-11-24T08:00:00+02:00", "Mars/Olympus",
+            )
+        with self.assertRaisesRegex(ValueError, "does not match"):
+            self.store.create_mission_schedule(
+                self.workspace.id, "Wrong offset", {},
+                "2026-11-24T08:00:00+00:00", "Africa/Gaborone",
+            )
+
+    def test_due_schedule_promotes_once_into_existing_mission_queue(self):
+        schedule = self.store.create_mission_schedule(
+            self.workspace.id, "Due report", {"format": "markdown"},
+            "2026-11-23T08:00:00+02:00", "Africa/Gaborone",
+            priority=8, max_attempts=4, idempotency_key="due-report",
+        )
+        promoted = self.store.promote_due_mission_schedules(
+            self.workspace.id, now="2026-11-23T17:00:00+02:00",
+        )
+        self.assertEqual(len(promoted), 1)
+        job = promoted[0]
+        self.assertEqual(job["title"], "Due report")
+        self.assertEqual(job["payload"], {"format": "markdown"})
+        self.assertEqual(job["priority"], 8)
+        self.assertEqual(job["max_attempts"], 4)
+        self.assertEqual(job["idempotency_key"], "schedule:" + schedule["id"])
+        saved = self.store.get_mission_schedule(self.workspace.id, schedule["id"])
+        self.assertEqual(saved["status"], "promoted")
+        self.assertEqual(saved["mission_job_id"], job["id"])
+        self.assertEqual(
+            [event["event_type"] for event in
+             self.store.list_mission_schedule_events(self.workspace.id, schedule["id"])],
+            ["created", "promoted"],
+        )
+        self.assertEqual(
+            [event["event_type"] for event in
+             self.store.list_mission_job_events(self.workspace.id, job["id"])],
+            ["created"],
+        )
+        self.assertEqual(
+            self.store.promote_due_mission_schedules(
+                self.workspace.id, now="2026-11-23T18:00:00+02:00",
+            ),
+            [],
+        )
+        self.assertEqual(len(self.store.list_mission_jobs(self.workspace.id)), 1)
+
+    def test_future_and_cancelled_schedules_are_not_promoted(self):
+        future = self.store.create_mission_schedule(
+            self.workspace.id, "Future", {},
+            "2026-11-24T08:00:00+02:00", "Africa/Gaborone",
+        )
+        cancelled = self.store.create_mission_schedule(
+            self.workspace.id, "Cancelled", {},
+            "2026-11-23T08:00:00+02:00", "Africa/Gaborone",
+        )
+        self.store.cancel_mission_schedule(
+            self.workspace.id, cancelled["id"], "No longer needed",
+        )
+        self.assertEqual(
+            self.store.promote_due_mission_schedules(
+                self.workspace.id, now="2026-11-23T17:00:00+02:00",
+            ),
+            [],
+        )
+        self.assertEqual(
+            self.store.get_mission_schedule(self.workspace.id, future["id"])["status"],
+            "scheduled",
+        )
+
+    def test_concurrent_schedule_promotion_creates_one_queue_job(self):
+        schedule = self.store.create_mission_schedule(
+            self.workspace.id, "Concurrent", {},
+            "2026-11-23T08:00:00+02:00", "Africa/Gaborone",
+        )
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            results = list(pool.map(
+                lambda _: self.store.promote_due_mission_schedules(
+                    self.workspace.id, now="2026-11-23T17:00:00+02:00",
+                ),
+                range(6),
+            ))
+        jobs = [job for batch in results for job in batch]
+        self.assertEqual(len(jobs), 1)
+        saved = self.store.get_mission_schedule(self.workspace.id, schedule["id"])
+        self.assertEqual(saved["status"], "promoted")
+        self.assertEqual(len(self.store.list_mission_jobs(self.workspace.id)), 1)
+
+    def test_schedule_cannot_be_cancelled_after_promotion(self):
+        schedule = self.store.create_mission_schedule(
+            self.workspace.id, "Already due", {},
+            "2026-11-23T08:00:00+02:00", "Africa/Gaborone",
+        )
+        self.store.promote_due_mission_schedules(
+            self.workspace.id, now="2026-11-23T17:00:00+02:00",
+        )
+        with self.assertRaisesRegex(ValueError, "Only pending"):
+            self.store.cancel_mission_schedule(self.workspace.id, schedule["id"])
+
     def test_create_is_idempotent_and_workspace_scoped(self):
         first = self.store.create_mission_job(
             self.workspace.id, "Research", {"topic": "Botswana"},

@@ -21,3 +21,4 @@ pypdf
 fpdf2
 
 pyaudio
+tzdata>=2024.1
