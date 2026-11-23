@@ -1208,7 +1208,10 @@ class TaskStore:
                 if existing:
                     if (existing["title"] != title
                         or existing["payload_json"] != payload_json
-                        or existing["scheduled_at"] != due):
+                        or (scheduled_at is not None
+                            and existing["scheduled_at"] != due)
+                        or existing["priority"] != int(priority)
+                        or existing["max_attempts"] != int(max_attempts)):
                         raise ValueError(
                             "Mission idempotency key was reused with different input"
                         )
