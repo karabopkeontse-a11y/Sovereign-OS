@@ -94,6 +94,7 @@ class TaskStore:
             self._migrate_agent_collaboration(db)
             self._migrate_agent_assignments(db)
             self._migrate_agent_collaboration_recovery(db)
+            self._migrate_mission_runtime(db)
 
     def _migrate_plugin_registry(self, db) -> None:
         """Add the versioned plugin registry without rewriting existing records."""
@@ -1095,6 +1096,345 @@ class TaskStore:
                 ORDER BY sequence
             """, (workspace_id, discussion_id)).fetchall()
             return [dict(row) for row in rows]
+
+
+    def _migrate_mission_runtime(self, db) -> None:
+        """Add a workspace-scoped durable mission queue (schema v6)."""
+        db.executescript("""
+            CREATE TABLE IF NOT EXISTS mission_jobs (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                status TEXT NOT NULL DEFAULT 'queued'
+                    CHECK(status IN ('scheduled','queued','running','paused','retryable','completed','failed','cancelled')),
+                priority INTEGER NOT NULL DEFAULT 0,
+                idempotency_key TEXT NOT NULL DEFAULT '',
+                scheduled_at TEXT NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                max_attempts INTEGER NOT NULL DEFAULT 3
+                    CHECK(max_attempts BETWEEN 1 AND 20),
+                worker_id TEXT NOT NULL DEFAULT '',
+                lease_expires_at TEXT,
+                heartbeat_at TEXT,
+                last_error TEXT NOT NULL DEFAULT '',
+                result_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                started_at TEXT,
+                completed_at TEXT,
+                UNIQUE(id, workspace_id),
+                FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_mission_jobs_idempotency
+                ON mission_jobs(workspace_id, idempotency_key)
+                WHERE idempotency_key <> '';
+            CREATE INDEX IF NOT EXISTS idx_mission_jobs_claim
+                ON mission_jobs(workspace_id, status, scheduled_at, priority, created_at);
+            CREATE INDEX IF NOT EXISTS idx_mission_jobs_lease
+                ON mission_jobs(status, lease_expires_at);
+
+            CREATE TABLE IF NOT EXISTS mission_job_events (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                mission_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                worker_id TEXT NOT NULL DEFAULT '',
+                detail TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(mission_id, workspace_id)
+                    REFERENCES mission_jobs(id, workspace_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_mission_job_events_mission
+                ON mission_job_events(workspace_id, mission_id, created_at);
+        """)
+        version = db.execute(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations"
+        ).fetchone()[0]
+        if version < 6:
+            db.execute("""
+                INSERT INTO schema_migrations(version, name, applied_at)
+                VALUES (6, 'durable_mission_queue', ?)
+            """, (_now(),))
+
+    @staticmethod
+    def _mission_dict(row):
+        if not row:
+            return None
+        import json
+        item = dict(row)
+        item["payload"] = json.loads(item.pop("payload_json"))
+        item["result"] = json.loads(item.pop("result_json"))
+        return item
+
+    def create_mission_job(
+        self, workspace_id: str, title: str, payload: dict | None = None,
+        scheduled_at: str | None = None, priority: int = 0,
+        idempotency_key: str = "", max_attempts: int = 3,
+    ) -> dict:
+        """Persist a mission once; repeated idempotency keys return the same job."""
+        import json
+        title = (title or "").strip()
+        if not title:
+            raise ValueError("Mission title is required")
+        if not 1 <= int(max_attempts) <= 20:
+            raise ValueError("max_attempts must be between 1 and 20")
+        if not -100 <= int(priority) <= 100:
+            raise ValueError("Mission priority must be between -100 and 100")
+        key = (idempotency_key or "").strip()
+        if len(key) > 200:
+            raise ValueError("Mission idempotency key is too long")
+        try:
+            payload_json = json.dumps(payload or {}, sort_keys=True)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Mission payload must be JSON serializable") from exc
+        now = _now()
+        due = scheduled_at or now
+        if not isinstance(due, str) or not due.strip():
+            raise ValueError("scheduled_at must be a non-empty ISO timestamp")
+        status = "scheduled" if due > now else "queued"
+        mission_id = str(uuid4())
+        with self._connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            if not db.execute(
+                "SELECT 1 FROM workspaces WHERE id=?", (workspace_id,)
+            ).fetchone():
+                raise ValueError("Workspace does not exist")
+            if key:
+                existing = db.execute("""
+                    SELECT * FROM mission_jobs
+                    WHERE workspace_id=? AND idempotency_key=?
+                """, (workspace_id, key)).fetchone()
+                if existing:
+                    if (existing["title"] != title
+                        or existing["payload_json"] != payload_json
+                        or existing["scheduled_at"] != due):
+                        raise ValueError(
+                            "Mission idempotency key was reused with different input"
+                        )
+                    return self._mission_dict(existing)
+            db.execute("""
+                INSERT INTO mission_jobs (
+                    id, workspace_id, title, payload_json, status, priority,
+                    idempotency_key, scheduled_at, attempts, max_attempts,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+            """, (
+                mission_id, workspace_id, title, payload_json, status,
+                int(priority), key, due, int(max_attempts), now, now,
+            ))
+            db.execute("""
+                INSERT INTO mission_job_events
+                (id, workspace_id, mission_id, event_type, detail, created_at)
+                VALUES (?, ?, ?, 'created', ?, ?)
+            """, (str(uuid4()), workspace_id, mission_id, status, now))
+            row = db.execute(
+                "SELECT * FROM mission_jobs WHERE id=? AND workspace_id=?",
+                (mission_id, workspace_id),
+            ).fetchone()
+            return self._mission_dict(row)
+
+    def get_mission_job(self, workspace_id: str, mission_id: str) -> dict | None:
+        with self._connection() as db:
+            row = db.execute("""
+                SELECT * FROM mission_jobs WHERE id=? AND workspace_id=?
+            """, (mission_id, workspace_id)).fetchone()
+        return self._mission_dict(row)
+
+    def list_mission_jobs(
+        self, workspace_id: str, limit: int = 50,
+        statuses: list[str] | None = None,
+    ) -> list[dict]:
+        allowed = {
+            "scheduled", "queued", "running", "paused", "retryable",
+            "completed", "failed", "cancelled",
+        }
+        selected = list(dict.fromkeys(statuses or []))
+        if any(status not in allowed for status in selected):
+            raise ValueError("Unknown mission status filter")
+        sql = "SELECT * FROM mission_jobs WHERE workspace_id=?"
+        params = [workspace_id]
+        if selected:
+            sql += " AND status IN (" + ",".join("?" for _ in selected) + ")"
+            params.extend(selected)
+        sql += " ORDER BY priority DESC, created_at DESC LIMIT ?"
+        params.append(max(1, min(int(limit), 200)))
+        with self._connection() as db:
+            rows = db.execute(sql, params).fetchall()
+        return [self._mission_dict(row) for row in rows]
+
+    def claim_mission_job(
+        self, workspace_id: str, worker_id: str,
+        lease_seconds: int = 60, mission_id: str | None = None,
+    ) -> dict | None:
+        """Atomically claim due work or reclaim a worker whose lease expired."""
+        worker_id = (worker_id or "").strip()
+        if not worker_id:
+            raise ValueError("worker_id is required")
+        if not 10 <= int(lease_seconds) <= 3600:
+            raise ValueError("lease_seconds must be between 10 and 3600")
+        from datetime import timedelta
+        now_dt = datetime.now(timezone.utc)
+        now = now_dt.isoformat()
+        expires = (now_dt + timedelta(seconds=int(lease_seconds))).isoformat()
+        with self._connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            sql = """
+                SELECT * FROM mission_jobs
+                WHERE workspace_id=? AND attempts < max_attempts
+                  AND (
+                    (status IN ('queued','retryable') AND scheduled_at <= ?)
+                    OR (status='scheduled' AND scheduled_at <= ?)
+                    OR (status='running' AND lease_expires_at IS NOT NULL
+                        AND lease_expires_at <= ?)
+                  )
+            """
+            params = [workspace_id, now, now, now]
+            if mission_id:
+                sql += " AND id=?"
+                params.append(mission_id)
+            sql += " ORDER BY priority DESC, scheduled_at, created_at LIMIT 1"
+            row = db.execute(sql, params).fetchone()
+            if not row:
+                return None
+            previous_worker = row["worker_id"]
+            db.execute("""
+                UPDATE mission_jobs
+                SET status='running', worker_id=?, lease_expires_at=?,
+                    heartbeat_at=?, attempts=attempts+1,
+                    started_at=COALESCE(started_at, ?), updated_at=?
+                WHERE id=? AND workspace_id=?
+            """, (
+                worker_id, expires, now, now, now,
+                row["id"], workspace_id,
+            ))
+            event_type = "lease_reclaimed" if row["status"] == "running" else "claimed"
+            detail = ("previous worker: " + previous_worker) if previous_worker else ""
+            db.execute("""
+                INSERT INTO mission_job_events
+                (id, workspace_id, mission_id, event_type, worker_id, detail, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (
+                str(uuid4()), workspace_id, row["id"], event_type,
+                worker_id, detail, now,
+            ))
+            claimed = db.execute("""
+                SELECT * FROM mission_jobs WHERE id=? AND workspace_id=?
+            """, (row["id"], workspace_id)).fetchone()
+            return self._mission_dict(claimed)
+
+    def heartbeat_mission_job(
+        self, workspace_id: str, mission_id: str, worker_id: str,
+        lease_seconds: int = 60,
+    ) -> dict:
+        from datetime import timedelta
+        if not 10 <= int(lease_seconds) <= 3600:
+            raise ValueError("lease_seconds must be between 10 and 3600")
+        now_dt = datetime.now(timezone.utc)
+        now = now_dt.isoformat()
+        expires = (now_dt + timedelta(seconds=int(lease_seconds))).isoformat()
+        with self._connection() as db:
+            cursor = db.execute("""
+                UPDATE mission_jobs
+                SET heartbeat_at=?, lease_expires_at=?, updated_at=?
+                WHERE id=? AND workspace_id=? AND status='running'
+                  AND worker_id=?
+            """, (now, expires, now, mission_id, workspace_id, worker_id))
+            if cursor.rowcount != 1:
+                raise ValueError("Mission lease is not owned by this worker")
+            row = db.execute("""
+                SELECT * FROM mission_jobs WHERE id=? AND workspace_id=?
+            """, (mission_id, workspace_id)).fetchone()
+            return self._mission_dict(row)
+
+    def set_mission_job_status(
+        self, workspace_id: str, mission_id: str, status: str,
+        worker_id: str | None = None, detail: str = "",
+        result: dict | None = None,
+    ) -> dict:
+        """Apply a guarded mission transition and append an immutable event."""
+        import json
+        transitions = {
+            "scheduled": {"queued", "cancelled"},
+            "queued": {"cancelled", "paused"},
+            "running": {"paused", "retryable", "completed", "failed", "cancelled"},
+            "paused": {"queued", "cancelled"},
+            "retryable": {"queued", "cancelled"},
+            "completed": set(), "failed": set(), "cancelled": set(),
+        }
+        if status not in transitions:
+            raise ValueError("Unknown mission status")
+        result_json = json.dumps(result or {}, sort_keys=True)
+        now = _now()
+        with self._connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("""
+                SELECT * FROM mission_jobs WHERE id=? AND workspace_id=?
+            """, (mission_id, workspace_id)).fetchone()
+            if not row:
+                raise ValueError("Mission not found in workspace")
+            if status not in transitions[row["status"]]:
+                raise ValueError(
+                    f"Invalid mission transition: {row['status']} -> {status}"
+                )
+            if row["status"] == "running" and (
+                not worker_id or row["worker_id"] != worker_id
+            ):
+                raise ValueError("Only the lease owner can change a running mission")
+            if status == "queued" and row["status"] not in {"paused", "retryable"}:
+                raise ValueError("Only paused or retryable missions can be resumed")
+            if status == "queued":
+                db.execute("""
+                    UPDATE mission_jobs SET status=?, worker_id='', lease_expires_at=NULL,
+                        heartbeat_at=NULL, last_error='', updated_at=?
+                    WHERE id=? AND workspace_id=?
+                """, (status, now, mission_id, workspace_id))
+            elif status in {"completed", "failed", "cancelled"}:
+                db.execute("""
+                    UPDATE mission_jobs SET status=?, worker_id='', lease_expires_at=NULL,
+                        heartbeat_at=NULL, last_error=?, result_json=?,
+                        completed_at=?, updated_at=?
+                    WHERE id=? AND workspace_id=?
+                """, (
+                    status, (detail or "")[:2000], result_json, now, now,
+                    mission_id, workspace_id,
+                ))
+            else:
+                db.execute("""
+                    UPDATE mission_jobs SET status=?, worker_id='', lease_expires_at=NULL,
+                        heartbeat_at=NULL, last_error=?, updated_at=?
+                    WHERE id=? AND workspace_id=?
+                """, (
+                    status, (detail or "")[:2000], now, mission_id, workspace_id,
+                ))
+            db.execute("""
+                INSERT INTO mission_job_events
+                (id, workspace_id, mission_id, event_type, worker_id, detail, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (
+                str(uuid4()), workspace_id, mission_id, status,
+                worker_id or "", (detail or "")[:2000], now,
+            ))
+            updated = db.execute("""
+                SELECT * FROM mission_jobs WHERE id=? AND workspace_id=?
+            """, (mission_id, workspace_id)).fetchone()
+            return self._mission_dict(updated)
+
+    def list_mission_job_events(
+        self, workspace_id: str, mission_id: str,
+    ) -> list[dict]:
+        with self._connection() as db:
+            exists = db.execute("""
+                SELECT 1 FROM mission_jobs WHERE id=? AND workspace_id=?
+            """, (mission_id, workspace_id)).fetchone()
+            if not exists:
+                raise ValueError("Mission not found in workspace")
+            rows = db.execute("""
+                SELECT * FROM mission_job_events
+                WHERE workspace_id=? AND mission_id=?
+                ORDER BY created_at, id
+            """, (workspace_id, mission_id)).fetchall()
+        return [dict(row) for row in rows]
 
     def create_workspace(self, name: str, purpose: str) -> Workspace:
         name = name.strip()
