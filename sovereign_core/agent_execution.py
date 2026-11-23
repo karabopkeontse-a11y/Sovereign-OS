@@ -85,6 +85,9 @@ def execute_registered_step(
     if selected.permission_level != "read_only" and selected.status != "approved":
         raise AgentStepExecutionError(403, "This tool step requires explicit approval before execution.")
 
+    if not store.claim_plan_step(selected.id, (selected.status,)):
+        raise AgentStepExecutionError(409, "This plan step has already been claimed or is no longer ready.")
+
     started_at = None
     started_clock = None
     run_recorded = False
@@ -99,9 +102,9 @@ def execute_registered_step(
             for key, value in arguments.items()
         }, ensure_ascii=False)
         root = workspace_root(db_path, workspace.id)
-        if problem.status in {"planned", "awaiting_approval"}:
+        current_problem = store.get_problem(problem.id)
+        if current_problem and current_problem.status in {"planned", "awaiting_approval"}:
             store.set_problem_status(problem.id, "running")
-        store.update_step_status(selected.id, "running")
         started_at = _timestamp()
         started_clock = time.perf_counter()
 
