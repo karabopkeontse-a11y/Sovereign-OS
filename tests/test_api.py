@@ -191,6 +191,10 @@ class SovereignAPITests(unittest.TestCase):
             "x-sovereign-cloud-consent",
             result.headers.get("access-control-allow-headers", "").lower(),
         )
+        self.assertIn(
+            "idempotency-key",
+            result.headers.get("access-control-allow-headers", "").lower(),
+        )
 
     def test_voice_transcription_requires_explicit_cloud_consent(self):
         result = self.client.post(
