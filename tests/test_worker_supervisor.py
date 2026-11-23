@@ -169,7 +169,8 @@ class MissionWorkerSupervisorTests(unittest.TestCase):
 
         saved = self.store.get_mission_job(self.workspace.id, job["id"])
         self.assertEqual(saved["status"], "running")
-        self.assertIsNone(saved["result"])
+        # Claim initializes an empty result; the stale executor result must not replace it.
+        self.assertEqual(saved["result"], {})
         self.assertEqual(worker.health()["heartbeat_failures"], 1)
         self.assertEqual(worker.health()["lease_losses"], 1)
 
