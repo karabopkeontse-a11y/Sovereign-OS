@@ -1043,21 +1043,26 @@ def create_app(db_path=None, router=None, token=None):
         "/api/v1/workspaces/{workspace_id}/agent-collaboration-runs/{run_id}",
         dependencies=[Depends(authorize)],
     )
-    def get_collaboration_run(workspace_id: str, run_id: str):
+    def get_collaboration_run(
+        workspace_id: str, run_id: str, background_tasks: BackgroundTasks
+    ):
         try:
             state.workspaces.get_workspace(workspace_id)
             tasks = state.workspaces.tasks
             run = tasks.get_agent_collaboration_run(workspace_id, run_id)
             if not run:
                 raise HTTPException(404, "Collaboration run not found in this workspace")
-            if run["status"] == "running":
-                with _collaboration_active_lock:
-                    worker_active = run_id in _collaboration_active_runs
-                if not worker_active:
-                    run = tasks.update_agent_collaboration_run(
-                        workspace_id, run_id, status="retryable",
-                        last_error="Worker was interrupted. Completed checkpoints are safe to resume.",
-                    )
+            with _collaboration_active_lock:
+                worker_active = run_id in _collaboration_active_runs
+            if run["status"] == "running" and not worker_active:
+                run = tasks.update_agent_collaboration_run(
+                    workspace_id, run_id, status="queued",
+                    last_error="Worker was interrupted. Resuming from completed checkpoints.",
+                )
+            if run["status"] == "queued" and not worker_active:
+                _schedule_collaboration_run(
+                    background_tasks, state, workspace_id, run_id
+                )
             checkpoints = tasks.list_agent_collaboration_checkpoints(
                 workspace_id, run_id
             )
