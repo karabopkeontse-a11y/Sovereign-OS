@@ -384,6 +384,54 @@ def registered_agent_step_executor(store, db_path):
                 retryable=False,
             )
         step = result.get("step") or {}
+        next_mission = None
+        ordered_steps = store.list_steps(problem_id.strip())
+        current_index = next(
+            (index for index, item in enumerate(ordered_steps)
+             if item.id == step_id.strip()),
+            None,
+        )
+        if current_index is not None and all(
+            item.status == "verified" for item in ordered_steps[:current_index + 1]
+        ):
+            next_step = (
+                ordered_steps[current_index + 1]
+                if current_index + 1 < len(ordered_steps) else None
+            )
+            if next_step and next_step.status in {"planned", "approved"}:
+                next_spec = store.get_step_spec(next_step.id)
+                if (
+                    next_spec
+                    and next_spec.get("tool_name") in TOOLS
+                    and (
+                        next_step.permission_level == "read_only"
+                        or next_step.status == "approved"
+                    )
+                ):
+                    try:
+                        next_arguments = validate_tool_input(
+                            next_spec["tool_name"],
+                            json.loads(next_spec["input_json"]),
+                        )
+                        next_mission = store.create_mission_job(
+                            context.workspace_id,
+                            ("Continue agent task: " + next_step.action)[:240],
+                            {
+                                "kind": "registered_agent_step",
+                                "problem_id": problem_id.strip(),
+                                "step_id": next_step.id,
+                            },
+                            idempotency_key=(
+                                "registered-agent-step:"
+                                + problem_id.strip() + ":" + next_step.id
+                            ),
+                            max_attempts=3,
+                        )
+                    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                        # An invalid later step is left visible for user correction;
+                        # it is never converted into a different tool or action.
+                        next_mission = None
+
         return {
             "task_id": result["task_id"],
             "step_id": step_id.strip(),
@@ -392,6 +440,7 @@ def registered_agent_step_executor(store, db_path):
             "replayed": bool(result.get("replayed")),
             "reconciled": bool(result.get("reconciled")),
             "tool_result": result.get("tool_result") or {},
+            "next_mission_id": next_mission["id"] if next_mission else None,
         }
 
     return execute
