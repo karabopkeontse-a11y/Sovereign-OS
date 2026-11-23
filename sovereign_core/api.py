@@ -1298,11 +1298,14 @@ def create_app(db_path=None, router=None, token=None):
                 "approval_events": tasks.list_approval_events(workspace.id, problem.id)}
 
     @app.post("/api/v1/workspaces/{workspace_id}/agent/tasks/{problem_id}/execute-next", dependencies=[Depends(authorize)])
-    def execute_next_agent_step(workspace_id: str, problem_id: str):
+    def execute_next_agent_step(
+        workspace_id: str, problem_id: str, recover_interrupted: bool = False
+    ):
         from .agent_execution import AgentStepExecutionError, execute_registered_step
         try:
             return execute_registered_step(
-                state.workspaces.tasks, state.db_path, workspace_id, problem_id
+                state.workspaces.tasks, state.db_path, workspace_id, problem_id,
+                recover_interrupted=recover_interrupted,
             )
         except AgentStepExecutionError as exc:
             raise HTTPException(exc.status_code, exc.detail) from exc
