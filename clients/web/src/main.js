@@ -171,108 +171,83 @@ async function runSpecialistGroup(){
  const selected=[...el("specialist-list").querySelectorAll("input:checked")].map(x=>x.value);
  const button=el("run-group-chat"),output=el("group-chat-output");
  if(!mission||selected.length<2)return;
-
- setBusy(button,true,"Specialists are working...");
+ setBusy(button,true,"Queueing mission...");
  output.replaceChildren();
-
  const status=document.createElement("p");
- status.textContent="The Leader is coordinating "+selected.length+" Specialists. Collecting proposals, peer reviews and the consolidated report...";
+ status.textContent="Submitting your mission to the durable Agent Collaboration queue...";
  output.append(status);
-
  const section=(headingText)=>{
-  const sectionEl=document.createElement("section");
-  sectionEl.className="specialist-report-section";
-  const heading=document.createElement("h3");
-  heading.textContent=headingText;
-  sectionEl.append(heading);
-  output.append(sectionEl);
-  return sectionEl;
+  const node=document.createElement("section");node.className="specialist-report-section";
+  const heading=document.createElement("h3");heading.textContent=headingText;node.append(heading);output.append(node);return node;
  };
-
  const card=(parent,title,detail,content)=>{
-  const item=document.createElement("article");
-  item.className="specialist-response";
-  const heading=document.createElement("b");
-  heading.textContent=title;
-  item.append(heading);
-  if(detail){
-   const meta=document.createElement("small");
-   meta.textContent=detail;
-   item.append(meta);
-  }
-  const body=document.createElement("p");
-  body.textContent=content||"No content returned.";
-  item.append(body);
-  parent.append(item);
+  const item=document.createElement("article");item.className="specialist-response";
+  const heading=document.createElement("b");heading.textContent=title;item.append(heading);
+  if(detail){const meta=document.createElement("small");meta.textContent=detail;item.append(meta);}
+  const body=document.createElement("p");body.textContent=content||"No content returned.";item.append(body);parent.append(item);
  };
-
+ const wait=ms=>new Promise(resolve=>window.setTimeout(resolve,ms));
+ const pendingKey="so-collab-pending:"+active;
+ let pending=null;
+ try{pending=JSON.parse(sessionStorage.getItem(pendingKey)||"null");}catch(error){}
+ if(!pending||pending.mission!==mission||JSON.stringify(pending.selected)!==JSON.stringify(selected)){
+  pending={mission,selected,key:(crypto.randomUUID?crypto.randomUUID():Date.now()+"-"+Math.random())};
+  sessionStorage.setItem(pendingKey,JSON.stringify(pending));
+ }
+ let runId=null;
  try{
-  const data=await api(
-   "/api/v1/workspaces/"+encodeURIComponent(active)+"/orchestrate",
-   {
-    method:"POST",
-    body:JSON.stringify({
-     message:mission,
-     conversation_id:conversation,
-     specialist_ids:selected,
-     max_agents:selected.length
-    }),
-    timeoutMs:600000
+  const queued=await api("/api/v1/workspaces/"+encodeURIComponent(active)+"/orchestrate",{
+   method:"POST",
+   headers:{"Idempotency-Key":pending.key},
+   body:JSON.stringify({message:mission,conversation_id:conversation,specialist_ids:selected,max_agents:selected.length}),
+   timeoutMs:20000
+  });
+  runId=queued.run_id;
+  if(!runId)throw Error("The API did not return a durable run ID.");
+  sessionStorage.setItem("so-collab-active:"+active,JSON.stringify({runId,mission,key:pending.key}));
+  status.textContent="Mission "+runId.slice(0,8)+" queued. Sovereign is saving each completed stage as it works...";
+  const roster=await api("/api/v1/workspaces/"+encodeURIComponent(active)+"/agents");
+  const names=Object.fromEntries((roster.agents||[]).map(agent=>[agent.id,agent.name]));
+  let snapshot=null;
+  for(let attempt=0;attempt<900;attempt++){
+   snapshot=await api("/api/v1/workspaces/"+encodeURIComponent(active)+"/agent-collaboration-runs/"+encodeURIComponent(runId),{timeoutMs:15000});
+   const run=snapshot.run;
+   status.textContent="Mission "+runId.slice(0,8)+" · "+(run.current_stage||run.status).replaceAll("_"," ")+" · attempt "+(run.attempts||0);
+   if(run.status==="completed")break;
+   if(["retryable","failed","cancelled"].includes(run.status)){
+    status.textContent="Mission paused ("+run.status+"). Completed checkpoints are saved. "+(run.last_error||"You can safely retry the unfinished stages.");
+    const retry=document.createElement("button");retry.type="button";retry.className="primary";retry.textContent="Resume unfinished stages";
+    retry.onclick=async()=>{retry.disabled=true;try{await api("/api/v1/workspaces/"+encodeURIComponent(active)+"/agent-collaboration-runs/"+encodeURIComponent(runId)+"/retry",{method:"POST",body:"{}"});status.textContent="Resuming from the last completed checkpoint...";await wait(1200);button.click();}catch(error){status.textContent="Retry could not be queued: "+error.message;retry.disabled=false;}};
+    output.append(retry);return;
    }
-  );
-
-  conversation=data.conversation_id||conversation;
-  output.replaceChildren();
-
+   await wait(1500);
+  }
+  if(!snapshot||snapshot.run.status!=="completed"){
+   status.textContent="The mission is still running. Its run ID is "+runId+". Reopen Agent Collaboration and resume/check this run; do not submit a new mission.";
+   return;
+  }
+  const checkpoints=snapshot.checkpoints||[];
+  const stageItems=stage=>checkpoints.filter(item=>item.stage===stage&&item.status==="completed");
   const proposals=section("Specialist proposals");
-  (data.proposals||[]).forEach(item=>{
-   card(
-    proposals,
-    item.name+" ? "+item.role,
-    [item.provider,item.model].filter(Boolean).join(" ? "),
-    item.reply
-   );
-  });
-
+  stageItems("proposals").forEach(item=>card(proposals,names[item.agent_id]||item.agent_id,item.provider+" · "+item.model,item.result));
   const reviews=section("Peer reviews");
-  (data.peer_reviews||[]).forEach(item=>{
-   card(
-    reviews,
-    item.name+" ? Peer review",
-    [item.provider,item.model].filter(Boolean).join(" ? "),
-    item.reply
-   );
-  });
-
+  stageItems("reviews").forEach(item=>card(reviews,(names[item.agent_id]||item.agent_id)+" · Peer review",item.provider+" · "+item.model,item.result));
   const responses=section("Agent-to-agent responses");
-  (data.agent_responses||[]).forEach(item=>{
-   const reviewer=item.reviewer_name||item.responding_to||"a colleague";
-   card(
-    responses,
-    (item.name||item.agent_id||"Specialist")+" ? Response to "+reviewer,
-    [item.role,item.provider,item.model].filter(Boolean).join(" ? "),
-    item.reply
-   );
-  });
-
-  const assignments=section("Assignment progress");
-  (data.assignments||[]).forEach(item=>{
-   const title=item.agent_name||item.agent_id||"Agent assignment";
-   const detail="Status: "+(item.status||"unknown");
-   card(assignments,title,detail,item.task||item.result||"Assignment recorded.");
-  });
-
-  const report=section("Sovereign Lead ? Consolidated report");
-  card(report,"Final report","Discussion status: "+(data.status||"returned"),data.report);
-
-  notice("The Leader completed the collective report. Agent discussion and assignments were persisted in this workspace.");
+  stageItems("responses").forEach(item=>card(responses,(names[item.agent_id]||item.agent_id)+" · Direct response",item.provider+" · "+item.model,item.result));
+  const leader=stageItems("leader_synthesis")[0];
+  const report=section("Sovereign Lead · Consolidated report");
+  if(leader)card(report,"Final report","Discussion status: completed",leader.result);
+  conversation=snapshot.run.conversation_id||conversation;
+  sessionStorage.removeItem(pendingKey);
+  notice("The Leader completed the mission. All four stages are persisted as workspace-scoped checkpoints.");
  }catch(error){
-  output.textContent="Orchestration failed: "+error.message;
+  status.textContent="Mission submission or status check was interrupted: "+error.message+". The same idempotency key is retained so you can safely retry without creating a duplicate mission.";
   notice(error.message,"error");
  }finally{
   setBusy(button,false);
  }
 }
+
 async function activateModel(){try{const choice=JSON.parse(el("model-select").value);await api("/api/v1/models/select",{method:"POST",body:JSON.stringify(choice)});await models();notice("Manual model selection updated: "+choice.provider+" · "+choice.model+".");}catch(e){notice("Model switch failed: "+e.message,"error");}}
 async function devices(){const d=await api("/api/v1/iot/devices");el("devices-count").textContent=d.simulation?d.devices.length+" simulated":"Connected";const list=el("device-list");list.replaceChildren();d.devices.forEach(x=>{const c=document.createElement("article");c.className="device-card";const b=document.createElement("b");b.textContent=x.name;const s=document.createElement("span");s.className="status-tag status-warn";s.textContent="SIMULATION";const p=document.createElement("p");p.textContent=x.value+" "+x.unit+" · "+x.kind;c.append(b,s,p);list.append(c);});}
 async function approvals(){
