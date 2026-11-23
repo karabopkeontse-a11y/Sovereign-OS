@@ -209,6 +209,35 @@ class MissionWorkerSupervisorTests(unittest.TestCase):
         self.assertIn("lease_reclaimed", event_types)
         self.assertEqual(event_types[-1], "completed")
 
+    def test_payload_kind_filter_leaves_other_mission_types_queued(self):
+        generic = self.store.create_mission_job(
+            self.workspace.id, "Scheduled research", {"topic": "Botswana"}
+        )
+        registered = self.store.create_mission_job(
+            self.workspace.id, "Registered agent step",
+            {"kind": "registered_agent_step", "problem_id": "p1", "step_id": "s1"},
+        )
+        calls = []
+        worker = MissionWorkerSupervisor(
+            self.store,
+            lambda job, _context: calls.append(job["id"]) or {"verified": True},
+            worker_id="registered-only-worker",
+            payload_kind="registered_agent_step",
+        )
+
+        outcome = worker.run_once()
+
+        self.assertEqual(outcome["claimed"], 1)
+        self.assertEqual(calls, [registered["id"]])
+        self.assertEqual(
+            self.store.get_mission_job(self.workspace.id, registered["id"])["status"],
+            "completed",
+        )
+        self.assertEqual(
+            self.store.get_mission_job(self.workspace.id, generic["id"])["status"],
+            "queued",
+        )
+
     def test_shutdown_stops_claiming_after_current_executor_returns(self):
         self.store.create_mission_job(self.workspace.id, "First", {})
         self.store.create_mission_job(self.workspace.id, "Second", {})
