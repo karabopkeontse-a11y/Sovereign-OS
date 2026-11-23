@@ -58,6 +58,7 @@ IMPORTANT — please read:
 """
 
 import os
+import atexit
 import importlib.util
 import re
 import json
@@ -2046,6 +2047,15 @@ def start_embedded_api():
     server = uvicorn.Server(config)
     thread = threading.Thread(target=server.run, name="SovereignOS-API", daemon=True)
     thread.start()
+
+    def stop_embedded_api():
+        server.should_exit = True
+        thread.join(timeout=20)
+        if thread.is_alive():
+            print("WARNING: SovereignOS API is still shutting down; durable mission leases will recover interrupted work.")
+
+    # Normal desktop exit asks the API lifespan to stop the mission worker cleanly.
+    atexit.register(stop_embedded_api)
 
     # Fail fast on a port collision instead of silently opening a broken desktop.
     deadline = time.monotonic() + 12
