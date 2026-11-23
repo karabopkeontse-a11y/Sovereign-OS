@@ -10,7 +10,7 @@ SovereignOS is a personal, fully agentic operating system and execution environm
 
 It should accept a goal, understand constraints, plan work, delegate to specialist agents, use explicitly permitted local resources and online services, execute workflows for hours or overnight, recover from interruptions, verify outcomes, preserve evidence, and deliver useful reports and completed artifacts.
 
-The ambition is approximately **200 coherent capabilities** delivered through one unified experience: native capabilities, plugins, application integrations, automation packs, and workspace tools. The user is comfortable with a desktop installation of up to approximately 4 GB when justified by useful capabilities. Do not inflate the footprint with redundant dependencies or placeholder features.
+The product target is **at least 200 distinct, meaningful, working capabilities** delivered through one unified experience: native capabilities, plugins, application integrations, automation packs, and workspace tools. This is a firm product target, not an aspiration or a number to reduce. The user is comfortable with a desktop installation of up to approximately 4 GB when justified by useful capabilities. Do not inflate the footprint with redundant dependencies or placeholder features.
 
 ## 2. Product outcomes
 
@@ -22,7 +22,7 @@ The ambition is approximately **200 coherent capabilities** delivered through on
 6. **Agent Collaboration:** persistent Agent Council, Leader coordination, specialist proposals, peer review, direct responses, task ownership, evidence, verification, and private Leader briefings.
 7. **Morning Intelligence:** completed work, artifacts, discoveries, opportunities, verified outcomes, pending approvals, failures, usage where available, and next actions.
 8. **Exceptional UX:** polished command centre, live mission visibility, clear workspace context, useful defaults, rich application surfaces, accessible controls, and consistent visual language.
-9. **Extensible ecosystem:** around 200 capabilities across plugins, plugin styles, applications, integrations, and automation packs, discoverable and manageable through one coherent catalog.
+9. **Extensible ecosystem:** at least 200 distinct, meaningful, working capabilities across plugins, plugin styles, applications, integrations, and automation packs, discoverable and manageable through one coherent catalog.
 10. **Multi-device product:** shared web experience first, then Windows desktop, then Android, without fragmenting the core engine.
 
 ## 3. Non-negotiable architecture principles
@@ -40,7 +40,7 @@ The ambition is approximately **200 coherent capabilities** delivered through on
 - Use unittest, not pytest. Make small, testable changes and preserve a cumulative decision log/backlog.
 - Never stage unrelated files or use destructive Git cleanup/reset/pull shortcuts.
 
-## 4. Capability portfolio — target ~200
+## 4. Capability portfolio — minimum target: 200 verified capabilities
 
 Organize capabilities into coherent families rather than a flat list:
 
@@ -57,7 +57,7 @@ Organize capabilities into coherent families rather than a flat list:
 11. Integrations and plugin ecosystem: connectors, local plugins, remote plugins, permissions, lifecycle, health, versioning, and marketplace/catalog.
 12. System experience: command centre, workspace switcher, activity timeline, mission monitor, app launcher, settings, accessibility, theming, onboarding, and device sync.
 
-Every catalog item must have a clear user outcome, permission model, online/offline classification, dependencies, verification strategy, and tests. Do not count trivial UI toggles as separate meaningful features.
+Every catalog item must have a clear user outcome, permission model, online/offline classification, dependencies, verification strategy, and tests. Maintain a cumulative feature register with stable IDs and lifecycle states: PLANNED, IN DEVELOPMENT, TESTING, VERIFIED, RELEASED. Count a capability toward the 200 only after its implementation and acceptance tests pass. Do not count trivial UI toggles, duplicate variants, disconnected placeholders, or merely displayed controls as features.
 
 ## 5. Delivery roadmap and order
 
@@ -95,8 +95,9 @@ Every catalog item must have a clear user outcome, permission model, online/offl
 - Multi-agent voice participation with distinct identities, Leader-controlled turn taking, and no overlapping speech.
 - Interruptible voice, replay, transcripts, and consistent workspace context.
 
-### Milestone F — 200-Capability Ecosystem and Jaw-Dropping UX
+### Milestone F — 200+ Verified-Capability Ecosystem and Jaw-Dropping UX
 - Coherent app launcher, capability catalog, plugin manager, automation builder, and mission command centre.
+- Deliver and maintain the minimum 200-capability feature register; report verified/released counts separately from planned and in-development counts.
 - Plugin styles: native/local, connected account, remote service, and user-defined workflow, all under one lifecycle and permission model.
 - Live mission timeline, progress visualization, evidence drawer, approvals inbox, morning briefing, and operational health.
 - Responsive shared web app, followed by Windows desktop and Android.
@@ -126,7 +127,7 @@ The user confirmed commit 17223a3 was pushed successfully. Subsequent GitHub edi
 - Frontend polling, reconnect restoration, and same-key submission replay.
 - Tests for durable resume, atomic worker claims, API idempotency, and workspace isolation.
 
-**Verification status:** subsequent GitHub edits have not yet been confirmed by the user's local test output. Do not describe them as fully tested or milestone-complete. First verify the latest remote branch head, safely fast-forward the local branch, and run focused unittest suites. Do not overwrite unrelated local files.
+**Verification status (2026-11-23):** the user confirmed the latest local focused suites passed: collaboration recovery 9/9, orchestration 7/7, and API 33/33, for 49/49 tests. The user also invoked `node --check clients\\web\\src\\main.js`; no syntax error was included in the supplied output. This is focused validation, not a full-suite pass or completion of Milestone A. Continue with provider error classification, bounded retry/backoff, restart/lease recovery, and concurrency tests. Do not overwrite unrelated local files.
 
 ## 7. Immediate next actions
 
