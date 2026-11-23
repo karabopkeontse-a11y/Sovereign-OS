@@ -2318,6 +2318,26 @@ class TaskStore:
             rows = db.execute("SELECT * FROM plan_steps WHERE problem_id=? ORDER BY step_number", (problem_id,)).fetchall()
         return [PlanStep(**dict(row)) for row in rows]
 
+    def claim_plan_step(self, step_id: str,
+                        expected_statuses: tuple[str, ...] = ("planned", "approved")) -> bool:
+        """Atomically claim a ready step for one executor.
+
+        A single conditional UPDATE is the serialization point: concurrent
+        callers can transition the same step to running only once.
+        """
+        allowed_statuses = {"planned", "approved"}
+        statuses = tuple(dict.fromkeys(expected_statuses))
+        if not statuses or any(status not in allowed_statuses for status in statuses):
+            raise ValueError("Only planned or approved steps can be claimed")
+        placeholders = ",".join("?" for _ in statuses)
+        with self._connection() as db:
+            cursor = db.execute(
+                f"UPDATE plan_steps SET status='running' "
+                f"WHERE id=? AND status IN ({placeholders})",
+                (step_id, *statuses),
+            )
+            return cursor.rowcount == 1
+
     def update_step_status(self, step_id: str, status: str) -> None:
         allowed = {
             "planned": {"running", "cancelled", "blocked"},
