@@ -589,12 +589,16 @@ class ModelRouter:
                 )
         deadline = self._clock() + self.total_deadline_seconds
         for index in order:
+            if self._clock() >= deadline:
+                break
             candidate = self.candidates[index]
             eligible, reason = self._eligible(candidate)
             if not eligible:
                 failures.append(f"{candidate.info.label}: skipped: {reason}")
                 continue
             for attempt in range(1, self.max_attempts + 1):
+                if self._clock() >= deadline:
+                    break
                 try:
                     model = candidate.client
                     if tools is not None:
