@@ -283,7 +283,15 @@ def resume_collaboration(
                 f"Direct response:\n{response}",
             )
         set_assignment(leader_id, "completed", report)
-        store.set_agent_discussion_status(workspace_id, discussion_id, "completed")
+        discussion_state = store.get_agent_discussion(workspace_id, discussion_id)
+        if not discussion_state:
+            raise ValueError("Collaboration discussion disappeared during execution.")
+        if discussion_state["status"] == "open":
+            store.set_agent_discussion_status(
+                workspace_id, discussion_id, "completed"
+            )
+        elif discussion_state["status"] != "completed":
+            raise ValueError("Collaboration discussion is not resumable.")
         store.update_agent_collaboration_run(
             workspace_id, run_id, status="completed",
             current_stage="completed", last_error="",
