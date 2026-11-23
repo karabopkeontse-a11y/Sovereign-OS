@@ -1415,7 +1415,7 @@ class TaskStore:
             rows = db.execute("""
                 SELECT * FROM mission_schedule_events
                 WHERE workspace_id=? AND schedule_id=?
-                ORDER BY created_at, id
+                ORDER BY rowid
             """, (workspace_id, schedule_id)).fetchall()
         return [dict(row) for row in rows]
 
