@@ -295,10 +295,18 @@ async function decideApproval(item,approved,button){
   await approvals();await loadAgentTasks();
  }catch(error){notice("Approval decision failed: "+error.message,"error");setBusy(button,false);}
 }
+let agentTasksLoading=false;
 async function loadAgentTasks(){
- const list=el("agent-task-list");if(!list||!active)return;
+ const list=el("agent-task-list");if(!list||!active||agentTasksLoading)return;
+ agentTasksLoading=true;
  try{
-  const data=await api("/api/v1/workspaces/"+encodeURIComponent(active)+"/agent/tasks");list.replaceChildren();
+  const workspacePath="/api/v1/workspaces/"+encodeURIComponent(active);
+  const [data,missionData]=await Promise.all([
+   api(workspacePath+"/agent/tasks"),
+   api(workspacePath+"/missions")
+  ]);
+  const missions=missionData.missions||[];
+  list.replaceChildren();
   if(!data.tasks.length){const empty=document.createElement("p");empty.className="muted";empty.textContent="No agent plans in this workspace yet. Give SovereignOS a goal above to create the first plan.";list.append(empty);return;}
   data.tasks.forEach(entry=>{
    const card=document.createElement("article");card.className="agent-task-card";
@@ -306,21 +314,27 @@ async function loadAgentTasks(){
    const status=document.createElement("span");status.className="status-tag "+(entry.task.status==="completed"?"status-safe":entry.task.status==="awaiting_approval"?"status-warn":"status-idle");status.textContent=entry.task.status.replaceAll("_"," ").toUpperCase();
    const description=document.createElement("p");description.textContent=entry.task.description;
    const specs=entry.tool_specs||[];
+   const taskMissions=missions.filter(job=>job.payload?.problem_id===entry.task.id);
    const steps=document.createElement("ol");steps.className="agent-step-list";
    entry.steps.forEach(step=>{
     const item=document.createElement("li");const action=document.createElement("span");action.textContent=step.action;
     const spec=specs.find(value=>value.step_id===step.id);
-    const meta=document.createElement("small");meta.textContent=step.permission_level.replaceAll("_"," ")+" · "+step.status.replaceAll("_"," ")+(spec?" · "+spec.tool_name:"");
+    const mission=taskMissions.find(value=>value.payload?.step_id===step.id);
+    const meta=document.createElement("small");
+    meta.textContent=step.permission_level.replaceAll("_"," ")+" · "+step.status.replaceAll("_"," ")+(spec?" · "+spec.tool_name:"")+(mission?" · mission "+mission.status.replaceAll("_"," "):"");
     item.append(action,meta);steps.append(item);
    });
    card.append(heading,status,description,steps);
-   const runnable=specs.some(spec=>{
-    const step=entry.steps.find(value=>value.id===spec.step_id);
-    return step&&(step.status==="approved"||(step.status==="planned"&&step.permission_level==="read_only"));
+   const nextStep=entry.steps.find((step,index)=>{
+    if(entry.steps.slice(0,index).some(previous=>previous.status!=="verified"))return false;
+    const spec=specs.find(value=>value.step_id===step.id);
+    const mission=taskMissions.find(value=>value.payload?.step_id===step.id);
+    const ready=(step.status==="planned"&&step.permission_level==="read_only")||step.status==="approved";
+    return !!spec&&ready&&!mission;
    });
-   if(runnable&&!["blocked","failed","completed","cancelled"].includes(entry.task.status)){
-    const run=document.createElement("button");run.type="button";run.className="primary";run.textContent="Run safe steps ↗";
-    run.onclick=()=>runAgentStep(entry.task.id,run);card.append(run);
+   if(nextStep&&!["blocked","failed","completed","cancelled"].includes(entry.task.status)){
+    const run=document.createElement("button");run.type="button";run.className="primary";run.textContent="Queue safe step ↗";
+    run.onclick=()=>runAgentStep(entry.task.id,nextStep.id,run);card.append(run);
    }
    if(!["completed","cancelled"].includes(entry.task.status)){
     const cancel=document.createElement("button");cancel.type="button";cancel.className="agent-cancel";cancel.textContent="Cancel task";
@@ -329,30 +343,24 @@ async function loadAgentTasks(){
    list.append(card);
   });
  }catch(error){list.textContent="Agent task list unavailable: "+error.message;}
+ finally{agentTasksLoading=false;}
 }
-async function runAgentStep(taskId,button){
+async function runAgentStep(taskId,stepId,button){
  const feedback=el("agent-plan-feedback"),output=el("agent-tool-result");
- setBusy(button,true,"Running safe steps…");
+ setBusy(button,true,"Queueing mission…");
  try{
-  const result=await api("/api/v1/workspaces/"+encodeURIComponent(active)+"/agent/tasks/"+encodeURIComponent(taskId)+"/run-safe",{method:"POST",body:JSON.stringify({}),timeoutMs:60000});
-  const results=result.results||[];
-  const summaries=results.map(item=>{
-   const tool=item.tool_result||{};
-   if(tool.tool==="workspace.list_files")return "Listed "+tool.count+" files";
-   if(tool.tool==="workspace.read_file")return "Read "+tool.path+" ("+tool.bytes+" bytes)";
-   if(tool.tool==="workspace.create_note")return "Created "+tool.path+" ("+tool.bytes+" bytes)";
-   return tool.tool||"Tool step";
-  });
-  feedback.textContent=result.executed_count+" safe step(s) executed and verified. "+result.stop_reason+" Task status: "+result.task_status.replaceAll("_"," ")+". ";
-  output.textContent=results.length?results.map((item,index)=>"STEP "+(index+1)+" · "+(summaries[index]||"Verified")+"\n"+JSON.stringify(item.tool_result||{},null,2)).join("\n\n"):"No safe tool steps were ready."; 
+  const path="/api/v1/workspaces/"+encodeURIComponent(active)+"/agent/tasks/"+encodeURIComponent(taskId)+"/steps/"+encodeURIComponent(stepId)+"/enqueue";
+  const result=await api(path,{method:"POST",body:JSON.stringify({})});
+  const mission=result.mission;
+  feedback.textContent="Mission "+mission.id.slice(0,8)+" is "+mission.status+". It is saved in the durable queue and continues in the background; consecutive approved safe steps are chained automatically.";
+  output.textContent="MISSION "+mission.id+"\nStatus: "+mission.status+"\nWorkspace: "+(workspaces.find(w=>w.id===active)?.name||active)+"\nThe browser can disconnect without cancelling this mission.";
   output.classList.remove("hidden");
-  await loadAgentTasks();await approvals();
-  notice(result.stopped_at_approval?"Safe steps verified. The next consequential action is waiting in Approvals.":"Agent safe-step batch completed.");
+  await loadAgentTasks();
+  notice("Registered agent mission queued. SovereignOS will continue in the background.");
  }catch(error){
-  feedback.textContent="Agent execution stopped: "+error.message;
-  notice("Agent tool could not complete: "+error.message,"error");
-  setBusy(button,false);
- }
+  feedback.textContent="Mission could not be queued: "+error.message;
+  notice("Mission enqueue failed: "+error.message,"error");
+ }finally{setBusy(button,false);}
 }
 async function cancelAgentTask(taskId,button){
  setBusy(button,true,"Cancelling…");
@@ -507,7 +515,8 @@ el("connect").onclick=()=>{if(base&&token)connect();else view("settings");};
 el("save").onclick=autoConnectLocal;
 function populateVoiceOptions(){const select=el("voice-choice");if(!select||!window.speechSynthesis)return;const current=prefs.voiceName;select.replaceChildren();const automatic=document.createElement("option");automatic.value="";automatic.textContent="Automatic · recommended";select.append(automatic);window.speechSynthesis.getVoices().forEach(v=>{const o=document.createElement("option");o.value=v.name;o.textContent=v.name+" · "+v.lang;select.append(o);});select.value=current;}
 function bindPreferences(){const sound=el("notification-sound"),duration=el("notification-duration"),rate=el("voice-rate"),language=el("voice-language"),voice=el("voice-choice");if(sound){sound.checked=!!prefs.sound;sound.onchange=()=>{prefs.sound=sound.checked;savePrefs();if(prefs.sound)notificationSound();};}if(duration){duration.value=String(prefs.noticeSeconds);duration.onchange=()=>{prefs.noticeSeconds=Number(duration.value)||10;savePrefs();};}if(rate){rate.value=String(prefs.voiceRate);el("voice-rate-value").textContent=Number(prefs.voiceRate).toFixed(2)+"×";rate.oninput=()=>{prefs.voiceRate=Number(rate.value);el("voice-rate-value").textContent=prefs.voiceRate.toFixed(2)+"×";savePrefs();};}if(language){language.value=prefs.voiceLanguage;language.onchange=()=>{prefs.voiceLanguage=language.value;savePrefs();populateVoiceOptions();};}if(voice){populateVoiceOptions();voice.onchange=()=>{prefs.voiceName=voice.value;savePrefs();};}}
-bindPreferences();if(window.speechSynthesis)window.speechSynthesis.onvoiceschanged=populateVoiceOptions;
+window.setInterval(()=>{const panel=el('view-agent');if(apiConnected&&active&&panel&&!panel.classList.contains('hidden'))loadAgentTasks();},3000);
+ bindPreferences();if(window.speechSynthesis)window.speechSynthesis.onvoiceschanged=populateVoiceOptions;
 document.querySelectorAll("[data-prompt]").forEach(b=>b.onclick=()=>{const field=el("message");field.value=b.dataset.prompt;field.dispatchEvent(new Event("input",{bubbles:true}));field.focus();});
 el("model-activate").onclick=activateModel;el("agent-plan-button").onclick=createAgentPlan;
 el("run-group-chat").onclick=runSpecialistGroup;
