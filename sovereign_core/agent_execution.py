@@ -75,6 +75,11 @@ def execute_registered_step(
         )
     if spec.get("tool_name") not in TOOLS:
         raise AgentStepExecutionError(403, "This step does not reference a registered workspace tool.")
+    if (
+        selected.status == "awaiting_approval"
+        and selected.permission_level != "read_only"
+    ):
+        raise AgentStepExecutionError(403, "This tool step requires explicit approval before execution.")
     if selected.status not in {"planned", "approved"}:
         raise AgentStepExecutionError(409, "This plan step is not ready for execution.")
     if selected.permission_level != "read_only" and selected.status != "approved":
