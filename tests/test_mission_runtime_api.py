@@ -118,6 +118,31 @@ class MissionRuntimeAPITests(unittest.TestCase):
             self.assertEqual(accepted.status_code, 202)
             self.assertEqual(accepted.json()["mission"]["status"], "queued")
 
+    def test_later_step_cannot_be_queued_before_predecessor_verifies(self):
+        problem, first = self.create_step()
+        second = self.store.add_plan_step(
+            problem.id, 2, "Second ordered step", "read_only"
+        )
+        self.store.add_step_spec(
+            second.id, "workspace.list_files", json.dumps({}),
+            "The second scoped file list is returned.",
+        )
+        with TestClient(self.app) as client:
+            path = (
+                f"/api/v1/workspaces/{self.workspace.id}/agent/tasks/"
+                f"{problem.id}/steps/{second.id}/enqueue"
+            )
+            rejected = client.post(path, headers=self.headers)
+            self.assertEqual(rejected.status_code, 409)
+
+            first_path = (
+                f"/api/v1/workspaces/{self.workspace.id}/agent/tasks/"
+                f"{problem.id}/steps/{first.id}/enqueue"
+            )
+            accepted = client.post(first_path, headers=self.headers)
+            self.assertEqual(accepted.status_code, 202)
+            self.assertEqual(len(self.store.list_mission_jobs(self.workspace.id)), 1)
+
     def test_worker_is_disabled_by_default(self):
         with TestClient(self.app) as client:
             health = client.get(
