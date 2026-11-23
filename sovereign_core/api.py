@@ -449,6 +449,8 @@ def _execute_collaboration_run(state, workspace_id: str, run_id: str) -> None:
     started = time.monotonic()
     try:
         tasks = state.workspaces.tasks
+        if not tasks.claim_agent_collaboration_run(workspace_id, run_id):
+            return
         run = tasks.get_agent_collaboration_run(workspace_id, run_id)
         if not run or run["status"] == "completed":
             return
