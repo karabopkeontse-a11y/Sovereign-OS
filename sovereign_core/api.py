@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import asyncio, io, json
 import os, secrets, sqlite3, shutil, subprocess, zipfile
 import time
+import logging
 from pathlib import Path
 from uuid import uuid4
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
@@ -21,6 +22,26 @@ from .agent_tools import TOOLS as AGENT_TOOLS, execute_workspace_tool, validate_
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(PROJECT_ROOT / ".env", override=False)
 load_dotenv(PROJECT_ROOT / ".env.local", override=False)
+
+# Metadata-only diagnostics for live multi-agent collaboration requests.
+COLLABORATION_LOG_PATH = PROJECT_ROOT / "logs" / "collaboration-diagnostics.log"
+COLLABORATION_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+collaboration_logger = logging.getLogger("sovereignos.collaboration")
+collaboration_logger.setLevel(logging.INFO)
+collaboration_logger.propagate = False
+
+if not any(
+    isinstance(handler, logging.FileHandler)
+    and Path(handler.baseFilename) == COLLABORATION_LOG_PATH.resolve()
+    for handler in collaboration_logger.handlers
+):
+    _collaboration_handler = logging.FileHandler(
+        COLLABORATION_LOG_PATH, encoding="utf-8"
+    )
+    _collaboration_handler.setFormatter(logging.Formatter(
+        "%(asctime)s %(levelname)s %(message)s"
+    ))
+    collaboration_logger.addHandler(_collaboration_handler)
 
 def now():
     return datetime.now(timezone.utc).isoformat()
@@ -53,6 +74,15 @@ class GroupChatInput(BaseModel):
     conversation_id: str | None = None
     specialist_ids: list[str] = Field(min_length=2, max_length=4)
 
+
+class OrchestrationInput(BaseModel):
+    message: str = Field(min_length=1, max_length=12000)
+    conversation_id: str | None = None
+    max_agents: int = Field(default=4, ge=1, le=4)
+    specialist_ids: list[str] | None = Field(
+        default=None, min_length=2, max_length=4
+    )
+
 class AgentPlanInput(BaseModel):
     goal: str = Field(min_length=10, max_length=4000)
     allow_cloud_processing: bool = False
@@ -61,6 +91,27 @@ class AgentPlanInput(BaseModel):
 class AgentDecisionInput(BaseModel):
     approved: bool
     note: str = Field(default="", max_length=1000)
+
+
+class AgentIdentityInput(BaseModel):
+    role: str = Field(min_length=1, max_length=80)
+    name: str = Field(min_length=1, max_length=120)
+    mission: str = Field(default="", max_length=1000)
+    provider: str = Field(default="", max_length=120)
+    model: str = Field(default="", max_length=160)
+    runtime: str = Field(default="", max_length=40)
+
+
+class AgentDiscussionInput(BaseModel):
+    title: str = Field(min_length=1, max_length=240)
+    leader_agent_id: str | None = None
+    conversation_id: str | None = None
+
+
+class AgentMessageInput(BaseModel):
+    speaker_type: str = Field(min_length=1, max_length=20)
+    content: str = Field(min_length=1, max_length=12000)
+    agent_id: str | None = None
 
 
 class ModelSelectInput(BaseModel):
@@ -609,6 +660,90 @@ def create_app(db_path=None, router=None, token=None):
     def list_workspaces():
         return {"workspaces": [{"id": w.id, "name": w.name, "purpose": w.purpose}
                                 for w in state.workspaces.list_workspaces()]}
+
+    @app.get("/api/v1/workspaces/{workspace_id}/agents",
+             dependencies=[Depends(authorize)])
+    def list_workspace_agents(workspace_id: str):
+        try:
+            state.workspaces.get_workspace(workspace_id)
+        except ValueError:
+            raise HTTPException(404, "Workspace not found")
+        return {"agents": state.workspaces.tasks.list_agent_identities(workspace_id)}
+
+    @app.post("/api/v1/workspaces/{workspace_id}/agents",
+              dependencies=[Depends(authorize)])
+    def create_workspace_agent(workspace_id: str, payload: AgentIdentityInput):
+        try:
+            state.workspaces.get_workspace(workspace_id)
+        except ValueError:
+            raise HTTPException(404, "Workspace not found")
+        try:
+            agent = state.workspaces.tasks.create_agent_identity(
+                workspace_id, payload.role, payload.name, payload.mission,
+                payload.provider, payload.model, payload.runtime
+            )
+            return {"agent": agent}
+        except sqlite3.IntegrityError:
+            raise HTTPException(409, "An agent with this role and name already exists in this workspace")
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+
+    @app.get("/api/v1/workspaces/{workspace_id}/agent-discussions",
+             dependencies=[Depends(authorize)])
+    def list_workspace_agent_discussions(workspace_id: str):
+        try:
+            state.workspaces.get_workspace(workspace_id)
+        except ValueError:
+            raise HTTPException(404, "Workspace not found")
+        return {
+            "discussions": state.workspaces.tasks.list_agent_discussions(workspace_id)
+        }
+
+    @app.post("/api/v1/workspaces/{workspace_id}/agent-discussions",
+              dependencies=[Depends(authorize)])
+    def create_workspace_agent_discussion(
+        workspace_id: str, payload: AgentDiscussionInput
+    ):
+        try:
+            state.workspaces.get_workspace(workspace_id)
+        except ValueError:
+            raise HTTPException(404, "Workspace not found")
+        try:
+            discussion = state.workspaces.tasks.create_agent_discussion(
+                workspace_id, payload.title, payload.leader_agent_id,
+                payload.conversation_id
+            )
+            return {"discussion": discussion}
+        except ValueError:
+            # Do not reveal whether a supplied agent ID exists in another workspace.
+            raise HTTPException(404, "Workspace or leader agent not found")
+
+    @app.get("/api/v1/workspaces/{workspace_id}/agent-discussions/{discussion_id}/messages",
+             dependencies=[Depends(authorize)])
+    def list_workspace_agent_messages(workspace_id: str, discussion_id: str):
+        try:
+            messages = state.workspaces.tasks.list_agent_messages(
+                workspace_id, discussion_id
+            )
+            return {"messages": messages}
+        except ValueError:
+            raise HTTPException(404, "Discussion not found")
+
+    @app.post("/api/v1/workspaces/{workspace_id}/agent-discussions/{discussion_id}/messages",
+              dependencies=[Depends(authorize)])
+    def append_workspace_agent_message(
+        workspace_id: str, discussion_id: str, payload: AgentMessageInput
+    ):
+        try:
+            message = state.workspaces.tasks.append_agent_message(
+                workspace_id, discussion_id, payload.speaker_type,
+                payload.content, payload.agent_id
+            )
+            return {"message": message}
+        except ValueError as exc:
+            if "does not belong" in str(exc) or "not found" in str(exc):
+                raise HTTPException(404, "Discussion or agent not found in this workspace")
+            raise HTTPException(400, str(exc))
     @app.get("/api/v1/workspaces/{workspace_id}/conversations", dependencies=[Depends(authorize)])
     def list_conversations(workspace_id: str):
         try:
@@ -729,6 +864,89 @@ def create_app(db_path=None, router=None, token=None):
             raise HTTPException(503, "Group session incomplete: " + type(exc).__name__ + ": " + str(exc))
         return {"conversation_id": conversation_id, "workspace_id": workspace.id,
                 "responses": results, "specialists": [item["id"] for item in selected]}
+
+
+    @app.post("/api/v1/workspaces/{workspace_id}/orchestrate",
+              dependencies=[Depends(authorize)])
+    def orchestrate_workspace(workspace_id: str, payload: OrchestrationInput):
+        try:
+            workspace = state.workspaces.get_workspace(workspace_id)
+        except ValueError:
+            raise HTTPException(404, "Workspace not found")
+
+        conversation_id = payload.conversation_id
+        if conversation_id:
+            db = state.connection()
+            try:
+                owner = db.execute(
+                    "SELECT id FROM api_conversations WHERE id=? AND workspace_id=?",
+                    (conversation_id, workspace.id),
+                ).fetchone()
+                if owner is None:
+                    raise HTTPException(
+                        404, "Conversation not found in this workspace"
+                    )
+            finally:
+                db.close()
+
+        request_id = uuid4().hex[:12]
+        started_at = time.monotonic()
+        collaboration_logger.info(
+            "request_started id=%s max_agents=%s",
+            request_id, payload.max_agents,
+        )
+        try:
+            memories = state.workspaces.search(
+                workspace.id, payload.message, limit=5
+            )
+            memory_context = "\\n".join(
+                "- " + item.content for item in memories
+            ) or "(none)"
+
+            from .orchestration import run_collaboration
+
+            result = run_collaboration(
+                store=state.workspaces.tasks,
+                router=state.get_router(),
+                workspace=workspace,
+                task=payload.message,
+                conversation_id=conversation_id,
+                memory_context=memory_context,
+                max_agents=payload.max_agents,
+                specialist_ids=payload.specialist_ids,
+            )
+            duration = time.monotonic() - started_at
+            collaboration_logger.info(
+                "request_completed id=%s duration_seconds=%.2f "
+                "proposals=%d peer_reviews=%d agent_responses=%d",
+                request_id, duration,
+                len(result.get("proposals", [])),
+                len(result.get("peer_reviews", [])),
+                len(result.get("agent_responses", [])),
+            )
+            return result
+        except HTTPException as exc:
+            collaboration_logger.info(
+                "request_http_exception id=%s duration_seconds=%.2f status=%s",
+                request_id, time.monotonic() - started_at, exc.status_code,
+            )
+            raise
+        except ValueError as exc:
+            collaboration_logger.warning(
+                "request_validation_failed id=%s duration_seconds=%.2f error_type=%s",
+                request_id, time.monotonic() - started_at, type(exc).__name__,
+            )
+            raise HTTPException(400, str(exc))
+        except Exception as exc:
+            collaboration_logger.error(
+                "request_failed id=%s duration_seconds=%.2f error_type=%s",
+                request_id, time.monotonic() - started_at, type(exc).__name__,
+            )
+            raise HTTPException(
+                503,
+                "Orchestration incomplete: "
+                + type(exc).__name__ + ": " + str(exc),
+            )
 
     @app.get("/api/v1/models/health", dependencies=[Depends(authorize)])
     def model_health():

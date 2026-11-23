@@ -167,17 +167,111 @@ async function loadSpecialists(){
  }catch(error){list.textContent="Specialist roster unavailable: "+error.message;run.disabled=true;}
 }
 async function runSpecialistGroup(){
- const mission=el("group-mission").value.trim(),selected=[...el("specialist-list").querySelectorAll("input:checked")].map(x=>x.value),button=el("run-group-chat"),output=el("group-chat-output");
+ const mission=el("group-mission").value.trim();
+ const selected=[...el("specialist-list").querySelectorAll("input:checked")].map(x=>x.value);
+ const button=el("run-group-chat"),output=el("group-chat-output");
  if(!mission||selected.length<2)return;
- setBusy(button,true,"Specialists are working…");output.replaceChildren();
- const status=document.createElement("p");status.textContent="Convening "+selected.length+" Specialists. Each will receive the shared workspace conversation.";output.append(status);
+
+ setBusy(button,true,"Specialists are working...");
+ output.replaceChildren();
+
+ const status=document.createElement("p");
+ status.textContent="The Leader is coordinating "+selected.length+" Specialists. Collecting proposals, peer reviews and the consolidated report...";
+ output.append(status);
+
+ const section=(headingText)=>{
+  const sectionEl=document.createElement("section");
+  sectionEl.className="specialist-report-section";
+  const heading=document.createElement("h3");
+  heading.textContent=headingText;
+  sectionEl.append(heading);
+  output.append(sectionEl);
+  return sectionEl;
+ };
+
+ const card=(parent,title,detail,content)=>{
+  const item=document.createElement("article");
+  item.className="specialist-response";
+  const heading=document.createElement("b");
+  heading.textContent=title;
+  item.append(heading);
+  if(detail){
+   const meta=document.createElement("small");
+   meta.textContent=detail;
+   item.append(meta);
+  }
+  const body=document.createElement("p");
+  body.textContent=content||"No content returned.";
+  item.append(body);
+  parent.append(item);
+ };
+
  try{
-  const data=await api("/api/v1/workspaces/"+encodeURIComponent(active)+"/group-chat",{method:"POST",body:JSON.stringify({message:mission,conversation_id:conversation,specialist_ids:selected})});
-  conversation=data.conversation_id;output.replaceChildren();
-  data.responses.forEach(item=>{const card=document.createElement("article");card.className="specialist-response";const heading=document.createElement("b");heading.textContent=item.specialist+" · "+item.provider;const body=document.createElement("p");body.textContent=item.reply;card.append(heading,body);output.append(card);});
-  notice("Specialist collective completed. All contributions were saved to this workspace conversation.");
- }catch(error){output.textContent="Group session failed: "+error.message;notice(error.message,"error");}
- finally{setBusy(button,false);}
+  const data=await api(
+   "/api/v1/workspaces/"+encodeURIComponent(active)+"/orchestrate",
+   {
+    method:"POST",
+    body:JSON.stringify({
+     message:mission,
+     conversation_id:conversation,
+     specialist_ids:selected,
+     max_agents:selected.length
+    }),
+    timeoutMs:600000
+   }
+  );
+
+  conversation=data.conversation_id||conversation;
+  output.replaceChildren();
+
+  const proposals=section("Specialist proposals");
+  (data.proposals||[]).forEach(item=>{
+   card(
+    proposals,
+    item.name+" ? "+item.role,
+    [item.provider,item.model].filter(Boolean).join(" ? "),
+    item.reply
+   );
+  });
+
+  const reviews=section("Peer reviews");
+  (data.peer_reviews||[]).forEach(item=>{
+   card(
+    reviews,
+    item.name+" ? Peer review",
+    [item.provider,item.model].filter(Boolean).join(" ? "),
+    item.reply
+   );
+  });
+
+  const responses=section("Agent-to-agent responses");
+  (data.agent_responses||[]).forEach(item=>{
+   const reviewer=item.reviewer_name||item.responding_to||"a colleague";
+   card(
+    responses,
+    (item.name||item.agent_id||"Specialist")+" ? Response to "+reviewer,
+    [item.role,item.provider,item.model].filter(Boolean).join(" ? "),
+    item.reply
+   );
+  });
+
+  const assignments=section("Assignment progress");
+  (data.assignments||[]).forEach(item=>{
+   const title=item.agent_name||item.agent_id||"Agent assignment";
+   const detail="Status: "+(item.status||"unknown");
+   card(assignments,title,detail,item.task||item.result||"Assignment recorded.");
+  });
+
+  const report=section("Sovereign Lead ? Consolidated report");
+  card(report,"Final report","Discussion status: "+(data.status||"returned"),data.report);
+
+  notice("The Leader completed the collective report. Agent discussion and assignments were persisted in this workspace.");
+ }catch(error){
+  output.textContent="Orchestration failed: "+error.message;
+  notice(error.message,"error");
+ }finally{
+  setBusy(button,false);
+ }
 }
 async function activateModel(){try{const choice=JSON.parse(el("model-select").value);await api("/api/v1/models/select",{method:"POST",body:JSON.stringify(choice)});await models();notice("Manual model selection updated: "+choice.provider+" · "+choice.model+".");}catch(e){notice("Model switch failed: "+e.message,"error");}}
 async function devices(){const d=await api("/api/v1/iot/devices");el("devices-count").textContent=d.simulation?d.devices.length+" simulated":"Connected";const list=el("device-list");list.replaceChildren();d.devices.forEach(x=>{const c=document.createElement("article");c.className="device-card";const b=document.createElement("b");b.textContent=x.name;const s=document.createElement("span");s.className="status-tag status-warn";s.textContent="SIMULATION";const p=document.createElement("p");p.textContent=x.value+" "+x.unit+" · "+x.kind;c.append(b,s,p);list.append(c);});}

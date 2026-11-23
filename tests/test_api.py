@@ -491,6 +491,104 @@ class SovereignAPITests(unittest.TestCase):
         self.assertEqual(allowed.status_code, 200, allowed.text)
         self.assertEqual(router.calls, 1)
 
+    def _workspace_id(self, name):
+        response = self.client.get("/api/v1/workspaces", headers=self.headers)
+        self.assertEqual(response.status_code, 200)
+        return next(w["id"] for w in response.json()["workspaces"] if w["name"] == name)
+
+    def test_agent_identity_and_discussion_api_are_workspace_scoped(self):
+        ncs = self._workspace_id("Nikolai Creative Studio")
+        smartflow = self._workspace_id("SmartFlow BW")
+
+        created = self.client.post(
+            f"/api/v1/workspaces/{ncs}/agents", headers=self.headers,
+            json={"role": "researcher", "name": "NCS Researcher",
+                  "mission": "Find evidence"}
+        )
+        self.assertEqual(created.status_code, 200)
+        agent = created.json()["agent"]
+
+        foreign_list = self.client.get(
+            f"/api/v1/workspaces/{smartflow}/agents", headers=self.headers
+        )
+        self.assertEqual(foreign_list.status_code, 200)
+        self.assertEqual(foreign_list.json()["agents"], [])
+
+        discussion_response = self.client.post(
+            f"/api/v1/workspaces/{ncs}/agent-discussions",
+            headers=self.headers,
+            json={"title": "Campaign review", "leader_agent_id": agent["id"]}
+        )
+        self.assertEqual(discussion_response.status_code, 200)
+        discussion = discussion_response.json()["discussion"]
+
+        message_response = self.client.post(
+            f"/api/v1/workspaces/{ncs}/agent-discussions/{discussion['id']}/messages",
+            headers=self.headers,
+            json={"speaker_type": "leader", "agent_id": agent["id"],
+                  "content": "I will coordinate the review."}
+        )
+        self.assertEqual(message_response.status_code, 200)
+
+        foreign_read = self.client.get(
+            f"/api/v1/workspaces/{smartflow}/agent-discussions/{discussion['id']}/messages",
+            headers=self.headers
+        )
+        self.assertEqual(foreign_read.status_code, 404)
+
+        own_read = self.client.get(
+            f"/api/v1/workspaces/{ncs}/agent-discussions/{discussion['id']}/messages",
+            headers=self.headers
+        )
+        self.assertEqual(own_read.status_code, 200)
+        self.assertEqual(len(own_read.json()["messages"]), 1)
+
+    def test_api_rejects_foreign_workspace_agent_as_discussion_leader(self):
+        ncs = self._workspace_id("Nikolai Creative Studio")
+        smartflow = self._workspace_id("SmartFlow BW")
+
+        created = self.client.post(
+            f"/api/v1/workspaces/{ncs}/agents", headers=self.headers,
+            json={"role": "leader", "name": "Private NCS Leader"}
+        )
+        self.assertEqual(created.status_code, 200)
+        foreign_agent_id = created.json()["agent"]["id"]
+
+        rejected = self.client.post(
+            f"/api/v1/workspaces/{smartflow}/agent-discussions",
+            headers=self.headers,
+            json={"title": "Should not be created",
+                  "leader_agent_id": foreign_agent_id}
+        )
+        self.assertEqual(rejected.status_code, 404)
+
+    def test_api_rejects_foreign_agent_posting_to_discussion(self):
+        ncs = self._workspace_id("Nikolai Creative Studio")
+        smartflow = self._workspace_id("SmartFlow BW")
+
+        agent_response = self.client.post(
+            f"/api/v1/workspaces/{ncs}/agents", headers=self.headers,
+            json={"role": "researcher", "name": "Private NCS Researcher"}
+        )
+        self.assertEqual(agent_response.status_code, 200)
+        foreign_agent_id = agent_response.json()["agent"]["id"]
+
+        discussion_response = self.client.post(
+            f"/api/v1/workspaces/{smartflow}/agent-discussions",
+            headers=self.headers, json={"title": "SmartFlow discussion"}
+        )
+        self.assertEqual(discussion_response.status_code, 200)
+        discussion_id = discussion_response.json()["discussion"]["id"]
+
+        rejected = self.client.post(
+            f"/api/v1/workspaces/{smartflow}/agent-discussions/{discussion_id}/messages",
+            headers=self.headers,
+            json={"speaker_type": "agent", "agent_id": foreign_agent_id,
+                  "content": "This must be rejected."}
+        )
+        self.assertEqual(rejected.status_code, 404)
+
+
 if __name__ == "__main__":
     unittest.main()
 
