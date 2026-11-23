@@ -115,6 +115,9 @@ def resume_collaboration(
     leader_assignment_id = _get(leader_assignment, "id")
 
     def set_assignment(agent_id, status, result=""):
+        existing_assignment = assignments.get(agent_id)
+        if existing_assignment and existing_assignment.get("status") == "completed":
+            return
         assignment_id = assignment_ids.get(agent_id)
         if assignment_id:
             store.update_agent_assignment(
