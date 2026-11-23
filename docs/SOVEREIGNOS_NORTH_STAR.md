@@ -71,6 +71,23 @@ Every catalog item must have a clear user outcome, permission model, online/offl
 - Keep a cumulative decision log and feature backlog.
 
 ### Milestone B — Sovereign Mission Runtime
+
+**Phase 1 — Persistent mission queue (implementation committed; local acceptance validation pending):**
+- Schema v6 adds workspace-scoped mission jobs and append-only mission event history without replacing existing plugin/workspace/collaboration tables.
+- Mission creation supports idempotency keys, JSON payloads, scheduled timestamps, priority and bounded attempt budgets.
+- Atomic worker claims prevent duplicate concurrent execution; worker leases and heartbeats identify ownership.
+- Expired leases can be reclaimed after a process/worker interruption; exhausted jobs transition to failed rather than remaining stuck as running.
+- Guarded lifecycle transitions cover pause, resume, retryable, completion, failure and cancellation.
+- Persistence acceptance tests cover migration preservation, idempotency, workspace isolation, due-time gating, concurrent claims, restart recovery, exhausted leases, heartbeat ownership and lifecycle audit events.
+- This phase is not counted as verified until the user runs the focused unittest suite successfully.
+
+**Phase 2 — Scheduler and execution supervision:**
+- Durable one-time, recurring, event-triggered, and user-triggered scheduling.
+- Separate execution from web request lifetime.
+- Per-stage deadlines, heartbeat/lease supervision, cancellation, pause/resume, resource limits, and graceful shutdown.
+- Persisted plans, tool calls, outputs, artifacts, evidence, approvals, and audit events.
+- Morning report generator and notification delivery.
+- Local-first execution and explicit online-provider fallback policies.
 - Durable job queue and scheduler with one-time, recurring, event-triggered, and user-triggered missions.
 - Separate execution from web request lifetime.
 - Per-stage deadlines, heartbeat/lease handling, cancellation, pause/resume, resource limits, and graceful shutdown.
