@@ -148,11 +148,10 @@ The user confirmed commit 17223a3 was pushed successfully. Subsequent GitHub edi
 ## 7. Immediate next actions
 
 1. Confirm the current remote branch head and changed file list.
-2. User safely fetches and fast-forwards only if the local branch is the expected feature branch and has no conflicting tracked changes.
-3. Run focused unittest suites: collaboration recovery, orchestration, API; run Python compile checks and node --check.
-4. Fix failures one at a time and rerun affected tests.
-5. Finish automatic retry/backoff and restart/lease recovery.
-6. Phase 1 is validated by focused local tests. Proceed to Phase 2 with a narrow, test-first scheduler/execution-supervisor slice.
+2. User safely fetches and fast-forwards only if the local branch is the expected feature branch and there are no conflicting local changes.
+3. Validate MISSION-012 worker-to-registered-agent integration with its focused unittest file and compile checks.
+4. Verify shutdown retry/replay, persisted approval enforcement, workspace scoping, receipt recovery, and lease-loss behavior.
+5. Complete restart/lease recovery and record focused user-reported test evidence before marking MISSION-012 VERIFIED.
 
 ## 8. Product acceptance standard
 
