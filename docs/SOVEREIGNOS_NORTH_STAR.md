@@ -83,7 +83,8 @@ Every catalog item must have a clear user outcome, permission model, online/offl
 
 **Phase 2 — Scheduler and execution supervision (in progress):**
 - Durable one-time schedules implemented and locally acceptance-tested (16/16 mission runtime tests passed 2026-11-23): timezone-aware timestamps, auditable lifecycle events, cancellation, and atomic idempotent promotion into the existing mission queue.
-- Next: recurring, event-triggered, and user-triggered scheduling.
+- Recurring daily/weekly schedule definitions and occurrence promotion are implemented in this slice; focused local acceptance is pending. DST gap policies (`skip` / `shift_forward`) and ambiguous-time policies (`first` / `second`) are explicit, and each occurrence promotes idempotently into the existing mission queue.
+- Next: event-triggered and user-triggered scheduling.
 - Separate execution from web request lifetime.
 - Per-stage deadlines, heartbeat/lease supervision, cancellation, pause/resume, resource limits, and graceful shutdown.
 - Persisted plans, tool calls, outputs, artifacts, evidence, approvals, and audit events.

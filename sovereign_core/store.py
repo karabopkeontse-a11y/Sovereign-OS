@@ -1207,6 +1207,79 @@ class TaskStore:
                 VALUES (7, 'durable_one_time_mission_schedules', ?)
             """, (_now(),))
 
+        db.executescript("""
+            CREATE TABLE IF NOT EXISTS mission_recurring_schedules (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                recurrence_type TEXT NOT NULL CHECK(recurrence_type IN ('daily','weekly')),
+                local_time TEXT NOT NULL,
+                timezone_name TEXT NOT NULL,
+                weekdays_json TEXT NOT NULL DEFAULT '[]',
+                start_date TEXT NOT NULL,
+                end_date TEXT,
+                next_local_date TEXT NOT NULL,
+                next_run_utc TEXT NOT NULL,
+                dst_nonexistent_policy TEXT NOT NULL
+                    CHECK(dst_nonexistent_policy IN ('skip','shift_forward')),
+                dst_ambiguous_policy TEXT NOT NULL
+                    CHECK(dst_ambiguous_policy IN ('first','second')),
+                priority INTEGER NOT NULL DEFAULT 0,
+                max_attempts INTEGER NOT NULL DEFAULT 3
+                    CHECK(max_attempts BETWEEN 1 AND 20),
+                idempotency_key TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'enabled'
+                    CHECK(status IN ('enabled','disabled','cancelled','completed')),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(id, workspace_id),
+                FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_mission_recurring_schedules_key
+                ON mission_recurring_schedules(workspace_id, idempotency_key);
+            CREATE INDEX IF NOT EXISTS idx_mission_recurring_schedules_due
+                ON mission_recurring_schedules(workspace_id, status, next_run_utc);
+
+            CREATE TABLE IF NOT EXISTS mission_recurring_occurrences (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                schedule_id TEXT NOT NULL,
+                occurrence_key TEXT NOT NULL,
+                local_date TEXT NOT NULL,
+                scheduled_for_utc TEXT NOT NULL,
+                status TEXT NOT NULL CHECK(status IN ('promoted','skipped')),
+                mission_job_id TEXT,
+                created_at TEXT NOT NULL,
+                UNIQUE(schedule_id, occurrence_key),
+                FOREIGN KEY(schedule_id, workspace_id)
+                    REFERENCES mission_recurring_schedules(id, workspace_id),
+                FOREIGN KEY(mission_job_id, workspace_id)
+                    REFERENCES mission_jobs(id, workspace_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_mission_recurring_occurrences_schedule
+                ON mission_recurring_occurrences(workspace_id, schedule_id, local_date);
+
+            CREATE TABLE IF NOT EXISTS mission_recurring_schedule_events (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                schedule_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                detail TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(schedule_id, workspace_id)
+                    REFERENCES mission_recurring_schedules(id, workspace_id)
+            );
+        """)
+        version = db.execute(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations"
+        ).fetchone()[0]
+        if version < 8:
+            db.execute("""
+                INSERT INTO schema_migrations(version, name, applied_at)
+                VALUES (8, 'durable_recurring_mission_schedules', ?)
+            """, (_now(),))
+
     def create_mission_schedule(
         self, workspace_id: str, title: str, payload: dict | None,
         run_at: str, timezone_name: str = "UTC", priority: int = 0,
@@ -1418,6 +1491,416 @@ class TaskStore:
                 ORDER BY rowid
             """, (workspace_id, schedule_id)).fetchall()
         return [dict(row) for row in rows]
+
+
+    @staticmethod
+    def _recurring_local_occurrence(local_date, local_time, timezone_name,
+                                    nonexistent_policy, ambiguous_policy):
+        """Resolve a local wall-clock occurrence with explicit DST behavior."""
+        from datetime import date, datetime, time, timedelta
+        from zoneinfo import ZoneInfo
+
+        zone = ZoneInfo(timezone_name)
+        day = date.fromisoformat(local_date)
+        wall = time.fromisoformat(local_time)
+        naive = datetime.combine(day, wall)
+
+        def valid_candidates(value):
+            candidates = []
+            for fold in (0, 1):
+                aware = value.replace(tzinfo=zone, fold=fold)
+                round_trip = aware.astimezone(timezone.utc).astimezone(zone)
+                if round_trip.replace(tzinfo=None) == value:
+                    if not any(
+                        item.astimezone(timezone.utc) == aware.astimezone(timezone.utc)
+                        for item in candidates
+                    ):
+                        candidates.append(aware)
+            return candidates
+
+        candidates = valid_candidates(naive)
+        if len(candidates) == 1:
+            return candidates[0]
+        if len(candidates) > 1:
+            ordered = sorted(candidates, key=lambda item: item.astimezone(timezone.utc))
+            return ordered[0] if ambiguous_policy == "first" else ordered[-1]
+        if nonexistent_policy == "skip":
+            return None
+        # Shift forward to the first valid wall-clock minute after a DST gap.
+        for minute in range(1, 181):
+            candidates = valid_candidates(naive + timedelta(minutes=minute))
+            if candidates:
+                return sorted(
+                    candidates, key=lambda item: item.astimezone(timezone.utc)
+                )[0]
+        raise ValueError("Could not resolve nonexistent local time within three hours")
+
+    @staticmethod
+    def _find_next_recurring_occurrence(
+        recurrence_type, local_time, timezone_name, after_date,
+        weekdays, end_date, nonexistent_policy, ambiguous_policy,
+    ):
+        from datetime import date, timedelta
+
+        cursor = date.fromisoformat(after_date)
+        end = date.fromisoformat(end_date) if end_date else None
+        skipped = []
+        for _ in range(3700):
+            cursor += timedelta(days=1)
+            if end and cursor > end:
+                return None, None, skipped
+            if recurrence_type == "weekly" and cursor.weekday() not in weekdays:
+                continue
+            occurrence = TaskStore._recurring_local_occurrence(
+                cursor.isoformat(), local_time, timezone_name,
+                nonexistent_policy, ambiguous_policy,
+            )
+            if occurrence is None:
+                skipped.append(cursor.isoformat())
+                continue
+            return cursor.isoformat(), occurrence, skipped
+        raise ValueError("Could not find a recurrence within ten years")
+
+    def create_recurring_mission_schedule(
+        self, workspace_id: str, title: str, payload: dict | None,
+        recurrence_type: str, local_time: str, timezone_name: str,
+        start_date: str, weekdays: list[int] | None = None,
+        end_date: str | None = None, dst_nonexistent_policy: str = "skip",
+        dst_ambiguous_policy: str = "first", priority: int = 0,
+        max_attempts: int = 3, idempotency_key: str = "",
+    ) -> dict:
+        """Create a daily or selected-weekday recurring mission definition."""
+        import json
+        from datetime import date, datetime, time, timezone
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+        title = (title or "").strip()
+        if not title:
+            raise ValueError("Recurring schedule title is required")
+        if recurrence_type not in {"daily", "weekly"}:
+            raise ValueError("recurrence_type must be daily or weekly")
+        try:
+            time.fromisoformat(local_time)
+            if len(local_time) != 5:
+                raise ValueError
+        except (TypeError, ValueError) as exc:
+            raise ValueError("local_time must use HH:MM format") from exc
+        timezone_name = (timezone_name or "").strip()
+        try:
+            ZoneInfo(timezone_name)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise ValueError("timezone_name must be a valid IANA timezone") from exc
+        try:
+            start = date.fromisoformat(start_date)
+            end = date.fromisoformat(end_date) if end_date else None
+        except (TypeError, ValueError) as exc:
+            raise ValueError("start_date and end_date must be ISO dates") from exc
+        if end and end < start:
+            raise ValueError("end_date cannot precede start_date")
+        selected_days = sorted(set(weekdays or []))
+        if recurrence_type == "weekly" and (
+            not selected_days or any(type(day) is not int or day < 0 or day > 6 for day in selected_days)
+        ):
+            raise ValueError("weekly schedules require weekdays from 0 (Monday) to 6 (Sunday)")
+        if recurrence_type == "daily" and selected_days:
+            raise ValueError("daily schedules do not accept weekdays")
+        if dst_nonexistent_policy not in {"skip", "shift_forward"}:
+            raise ValueError("dst_nonexistent_policy must be skip or shift_forward")
+        if dst_ambiguous_policy not in {"first", "second"}:
+            raise ValueError("dst_ambiguous_policy must be first or second")
+        if not 1 <= int(max_attempts) <= 20:
+            raise ValueError("max_attempts must be between 1 and 20")
+        if not -100 <= int(priority) <= 100:
+            raise ValueError("Schedule priority must be between -100 and 100")
+        try:
+            payload_json = json.dumps(payload or {}, sort_keys=True)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Schedule payload must be JSON serializable") from exc
+
+        first_date = start
+        if recurrence_type == "weekly":
+            while first_date.weekday() not in selected_days:
+                first_date = date.fromordinal(first_date.toordinal() + 1)
+                if end and first_date > end:
+                    raise ValueError("No selected weekday occurs within the schedule range")
+        first = self._recurring_local_occurrence(
+            first_date.isoformat(), local_time, timezone_name,
+            dst_nonexistent_policy, dst_ambiguous_policy,
+        )
+        if first is None:
+            next_date, first, _ = self._find_next_recurring_occurrence(
+                recurrence_type, local_time, timezone_name, first_date.isoformat(),
+                selected_days, end_date, dst_nonexistent_policy, dst_ambiguous_policy,
+            )
+            if not next_date:
+                raise ValueError("No valid occurrence exists within the schedule range")
+            first_date = date.fromisoformat(next_date)
+        if end and first_date > end:
+            raise ValueError("No occurrence exists within the schedule range")
+
+        key = (idempotency_key or "").strip() or str(uuid4())
+        if len(key) > 200:
+            raise ValueError("Schedule idempotency key is too long")
+        schedule_id, now = str(uuid4()), _now()
+        next_utc = first.astimezone(timezone.utc).isoformat()
+        with self._connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            if not db.execute("SELECT 1 FROM workspaces WHERE id=?", (workspace_id,)).fetchone():
+                raise ValueError("Workspace does not exist")
+            existing = db.execute("""
+                SELECT * FROM mission_recurring_schedules
+                WHERE workspace_id=? AND idempotency_key=?
+            """, (workspace_id, key)).fetchone()
+            if existing:
+                expected = (
+                    existing["title"], existing["payload_json"], existing["recurrence_type"],
+                    existing["local_time"], existing["timezone_name"],
+                    existing["weekdays_json"], existing["start_date"], existing["end_date"],
+                    existing["dst_nonexistent_policy"], existing["dst_ambiguous_policy"],
+                    existing["priority"], existing["max_attempts"],
+                )
+                supplied = (
+                    title, payload_json, recurrence_type, local_time, timezone_name,
+                    json.dumps(selected_days), start.isoformat(),
+                    end.isoformat() if end else None, dst_nonexistent_policy,
+                    dst_ambiguous_policy, int(priority), int(max_attempts),
+                )
+                if expected != supplied:
+                    raise ValueError("Recurring schedule idempotency key was reused with different input")
+                return dict(existing)
+            db.execute("""
+                INSERT INTO mission_recurring_schedules (
+                    id, workspace_id, title, payload_json, recurrence_type, local_time,
+                    timezone_name, weekdays_json, start_date, end_date, next_local_date,
+                    next_run_utc, dst_nonexistent_policy, dst_ambiguous_policy,
+                    priority, max_attempts, idempotency_key, status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'enabled', ?, ?)
+            """, (
+                schedule_id, workspace_id, title, payload_json, recurrence_type,
+                local_time, timezone_name, json.dumps(selected_days), start.isoformat(),
+                end.isoformat() if end else None, first_date.isoformat(), next_utc,
+                dst_nonexistent_policy, dst_ambiguous_policy, int(priority),
+                int(max_attempts), key, now, now,
+            ))
+            db.execute("""
+                INSERT INTO mission_recurring_schedule_events
+                (id, workspace_id, schedule_id, event_type, detail, created_at)
+                VALUES (?, ?, ?, 'created', ?, ?)
+            """, (str(uuid4()), workspace_id, schedule_id, next_utc, now))
+            row = db.execute("""
+                SELECT * FROM mission_recurring_schedules WHERE id=? AND workspace_id=?
+            """, (schedule_id, workspace_id)).fetchone()
+            return dict(row)
+
+    def get_recurring_mission_schedule(self, workspace_id: str, schedule_id: str) -> dict | None:
+        import json
+        with self._connection() as db:
+            row = db.execute("""
+                SELECT * FROM mission_recurring_schedules WHERE id=? AND workspace_id=?
+            """, (schedule_id, workspace_id)).fetchone()
+        if not row:
+            return None
+        item = dict(row)
+        item["payload"] = json.loads(item.pop("payload_json"))
+        item["weekdays"] = json.loads(item.pop("weekdays_json"))
+        return item
+
+    def list_recurring_mission_schedules(self, workspace_id: str, limit: int = 50) -> list[dict]:
+        import json
+        with self._connection() as db:
+            rows = db.execute("""
+                SELECT * FROM mission_recurring_schedules
+                WHERE workspace_id=? ORDER BY next_run_utc, created_at LIMIT ?
+            """, (workspace_id, max(1, min(int(limit), 200)))).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["payload"] = json.loads(item.pop("payload_json"))
+            item["weekdays"] = json.loads(item.pop("weekdays_json"))
+            result.append(item)
+        return result
+
+    def list_recurring_mission_occurrences(
+        self, workspace_id: str, schedule_id: str,
+    ) -> list[dict]:
+        with self._connection() as db:
+            if not db.execute("""
+                SELECT 1 FROM mission_recurring_schedules WHERE id=? AND workspace_id=?
+            """, (schedule_id, workspace_id)).fetchone():
+                raise ValueError("Recurring schedule not found in workspace")
+            rows = db.execute("""
+                SELECT * FROM mission_recurring_occurrences
+                WHERE workspace_id=? AND schedule_id=? ORDER BY local_date, occurrence_key
+            """, (workspace_id, schedule_id)).fetchall()
+        return [dict(row) for row in rows]
+
+    def set_recurring_mission_schedule_status(
+        self, workspace_id: str, schedule_id: str, status: str,
+    ) -> dict:
+        if status not in {"enabled", "disabled", "cancelled"}:
+            raise ValueError("Recurring schedule status must be enabled, disabled, or cancelled")
+        now = _now()
+        with self._connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("""
+                SELECT * FROM mission_recurring_schedules WHERE id=? AND workspace_id=?
+            """, (schedule_id, workspace_id)).fetchone()
+            if not row:
+                raise ValueError("Recurring schedule not found in workspace")
+            if row["status"] in {"cancelled", "completed"}:
+                raise ValueError("Terminal recurring schedules cannot be re-enabled or changed")
+            db.execute("""
+                UPDATE mission_recurring_schedules SET status=?, updated_at=?
+                WHERE id=? AND workspace_id=?
+            """, (status, now, schedule_id, workspace_id))
+            db.execute("""
+                INSERT INTO mission_recurring_schedule_events
+                (id, workspace_id, schedule_id, event_type, detail, created_at)
+                VALUES (?, ?, ?, ?, '', ?)
+            """, (str(uuid4()), workspace_id, schedule_id, status, now))
+            updated = db.execute("""
+                SELECT * FROM mission_recurring_schedules WHERE id=? AND workspace_id=?
+            """, (schedule_id, workspace_id)).fetchone()
+            return dict(updated)
+
+    def promote_due_recurring_mission_schedules(
+        self, workspace_id: str, limit: int = 50, now: str | None = None,
+    ) -> list[dict]:
+        """Promote all due recurring occurrences atomically into the one mission queue."""
+        from datetime import datetime, timezone
+        import json
+
+        current = datetime.now(timezone.utc)
+        if now is not None:
+            try:
+                current = datetime.fromisoformat(now.replace("Z", "+00:00"))
+            except (TypeError, ValueError) as exc:
+                raise ValueError("now must be a timezone-aware ISO timestamp") from exc
+            if current.tzinfo is None or current.utcoffset() is None:
+                raise ValueError("now must include an explicit UTC offset")
+            current = current.astimezone(timezone.utc)
+        now_utc = current.isoformat()
+        promoted = []
+        max_items = max(1, min(int(limit), 200))
+        with self._connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            schedules = db.execute("""
+                SELECT * FROM mission_recurring_schedules
+                WHERE workspace_id=? AND status='enabled' AND next_run_utc<=?
+                ORDER BY next_run_utc, created_at LIMIT ?
+            """, (workspace_id, now_utc, max_items)).fetchall()
+            for schedule in schedules:
+                current_schedule = schedule
+                while current_schedule and current_schedule["next_run_utc"] <= now_utc and len(promoted) < max_items:
+                    occurrence_date = current_schedule["next_local_date"]
+                    occurrence_key = occurrence_date + "T" + current_schedule["local_time"]
+                    local_dt = self._recurring_local_occurrence(
+                        occurrence_date, current_schedule["local_time"],
+                        current_schedule["timezone_name"],
+                        current_schedule["dst_nonexistent_policy"],
+                        current_schedule["dst_ambiguous_policy"],
+                    )
+                    if local_dt is None:
+                        # A skipped spring-forward wall time is recorded and advanced without a job.
+                        db.execute("""
+                            INSERT OR IGNORE INTO mission_recurring_occurrences
+                            (id, workspace_id, schedule_id, occurrence_key, local_date,
+                             scheduled_for_utc, status, mission_job_id, created_at)
+                            VALUES (?, ?, ?, ?, ?, ?, 'skipped', NULL, ?)
+                        """, (
+                            str(uuid4()), workspace_id, current_schedule["id"],
+                            occurrence_key, occurrence_date,
+                            current_schedule["next_run_utc"], now_utc,
+                        ))
+                        db.execute("""
+                            INSERT INTO mission_recurring_schedule_events
+                            (id, workspace_id, schedule_id, event_type, detail, created_at)
+                            VALUES (?, ?, ?, 'skipped_dst', ?, ?)
+                        """, (
+                            str(uuid4()), workspace_id, current_schedule["id"],
+                            occurrence_key, now_utc,
+                        ))
+                    else:
+                        run_utc = local_dt.astimezone(timezone.utc).isoformat()
+                        job_id = str(uuid4())
+                        job_key = "recurring:" + current_schedule["id"] + ":" + occurrence_key
+                        db.execute("""
+                            INSERT OR IGNORE INTO mission_jobs (
+                                id, workspace_id, title, payload_json, status, priority,
+                                idempotency_key, scheduled_at, attempts, max_attempts,
+                                created_at, updated_at
+                            ) VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, 0, ?, ?, ?)
+                        """, (
+                            job_id, workspace_id, current_schedule["title"],
+                            current_schedule["payload_json"], current_schedule["priority"],
+                            job_key, run_utc, current_schedule["max_attempts"], now_utc, now_utc,
+                        ))
+                        job = db.execute("""
+                            SELECT * FROM mission_jobs WHERE workspace_id=? AND idempotency_key=?
+                        """, (workspace_id, job_key)).fetchone()
+                        db.execute("""
+                            INSERT OR IGNORE INTO mission_job_events
+                            (id, workspace_id, mission_id, event_type, detail, created_at)
+                            VALUES (?, ?, ?, 'created', 'promoted from recurring schedule', ?)
+                        """, (str(uuid4()), workspace_id, job["id"], now_utc))
+                        db.execute("""
+                            INSERT OR IGNORE INTO mission_recurring_occurrences
+                            (id, workspace_id, schedule_id, occurrence_key, local_date,
+                             scheduled_for_utc, status, mission_job_id, created_at)
+                            VALUES (?, ?, ?, ?, ?, ?, 'promoted', ?, ?)
+                        """, (
+                            str(uuid4()), workspace_id, current_schedule["id"],
+                            occurrence_key, occurrence_date, run_utc, job["id"], now_utc,
+                        ))
+                        promoted.append(self._mission_dict(job))
+
+                    next_date, next_dt, skipped_dates = self._find_next_recurring_occurrence(
+                        current_schedule["recurrence_type"], current_schedule["local_time"],
+                        current_schedule["timezone_name"], occurrence_date,
+                        json.loads(current_schedule["weekdays_json"]),
+                        current_schedule["end_date"],
+                        current_schedule["dst_nonexistent_policy"],
+                        current_schedule["dst_ambiguous_policy"],
+                    )
+                    for skipped_date in skipped_dates:
+                        skipped_key = skipped_date + "T" + current_schedule["local_time"]
+                        db.execute("""
+                            INSERT OR IGNORE INTO mission_recurring_occurrences
+                            (id, workspace_id, schedule_id, occurrence_key, local_date,
+                             scheduled_for_utc, status, mission_job_id, created_at)
+                            VALUES (?, ?, ?, ?, ?, ?, 'skipped', NULL, ?)
+                        """, (
+                            str(uuid4()), workspace_id, current_schedule["id"],
+                            skipped_key, skipped_date, now_utc, now_utc,
+                        ))
+                        db.execute("""
+                            INSERT INTO mission_recurring_schedule_events
+                            (id, workspace_id, schedule_id, event_type, detail, created_at)
+                            VALUES (?, ?, ?, 'skipped_dst', ?, ?)
+                        """, (str(uuid4()), workspace_id, current_schedule["id"], skipped_key, now_utc))
+                    if not next_date:
+                        db.execute("""
+                            UPDATE mission_recurring_schedules
+                            SET status='completed', updated_at=?
+                            WHERE id=? AND workspace_id=?
+                        """, (now_utc, current_schedule["id"], workspace_id))
+                        db.execute("""
+                            INSERT INTO mission_recurring_schedule_events
+                            (id, workspace_id, schedule_id, event_type, detail, created_at)
+                            VALUES (?, ?, ?, 'completed', 'recurrence range exhausted', ?)
+                        """, (str(uuid4()), workspace_id, current_schedule["id"], now_utc))
+                        break
+                    next_run_utc = next_dt.astimezone(timezone.utc).isoformat()
+                    db.execute("""
+                        UPDATE mission_recurring_schedules
+                        SET next_local_date=?, next_run_utc=?, updated_at=?
+                        WHERE id=? AND workspace_id=? AND status='enabled'
+                    """, (next_date, next_run_utc, now_utc, current_schedule["id"], workspace_id))
+                    current_schedule = db.execute("""
+                        SELECT * FROM mission_recurring_schedules
+                        WHERE id=? AND workspace_id=?
+                    """, (current_schedule["id"], workspace_id)).fetchone()
+        return promoted
 
     @staticmethod
     def _mission_dict(row):

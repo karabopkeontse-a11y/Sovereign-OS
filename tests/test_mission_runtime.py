@@ -334,3 +334,138 @@ class MissionRuntimeStoreTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    def test_schema_v8_adds_recurring_schedules_without_losing_existing_tables(self):
+        with closing(sqlite3.connect(self.db_path)) as db:
+            version = db.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
+            tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        self.assertEqual(version, 8)
+        self.assertTrue({
+            "plugins", "workspace_metadata", "workspace_plugins",
+            "agent_collaboration_runs", "mission_jobs", "mission_schedules",
+            "mission_recurring_schedules", "mission_recurring_occurrences",
+            "mission_recurring_schedule_events",
+        }.issubset(tables))
+
+    def test_daily_recurring_schedule_promotes_due_occurrences_idempotently(self):
+        schedule = self.store.create_recurring_mission_schedule(
+            self.workspace.id, "Daily briefing", {"kind": "briefing"},
+            "daily", "08:30", "Africa/Gaborone", "2026-11-23",
+            idempotency_key="daily-briefing",
+        )
+        replay = self.store.create_recurring_mission_schedule(
+            self.workspace.id, "Daily briefing", {"kind": "briefing"},
+            "daily", "08:30", "Africa/Gaborone", "2026-11-23",
+            idempotency_key="daily-briefing",
+        )
+        self.assertEqual(schedule["id"], replay["id"])
+        promoted = self.store.promote_due_recurring_mission_schedules(
+            self.workspace.id, now="2026-11-25T09:00:00+02:00",
+        )
+        self.assertEqual(len(promoted), 3)
+        self.assertEqual(len(self.store.list_mission_jobs(self.workspace.id)), 3)
+        again = self.store.promote_due_recurring_mission_schedules(
+            self.workspace.id, now="2026-11-25T10:00:00+02:00",
+        )
+        self.assertEqual(again, [])
+        occurrences = self.store.list_recurring_mission_occurrences(
+            self.workspace.id, schedule["id"],
+        )
+        self.assertEqual([item["status"] for item in occurrences], ["promoted"] * 3)
+        self.assertEqual(
+            len({item["mission_job_id"] for item in occurrences}), 3,
+        )
+
+    def test_weekly_schedule_only_runs_selected_weekdays(self):
+        schedule = self.store.create_recurring_mission_schedule(
+            self.workspace.id, "Weekly review", {}, "weekly", "09:00",
+            "Africa/Gaborone", "2026-11-23", weekdays=[0, 2],
+        )
+        promoted = self.store.promote_due_recurring_mission_schedules(
+            self.workspace.id, now="2026-11-30T12:00:00+02:00",
+        )
+        self.assertEqual(len(promoted), 3)
+        dates = [
+            item["local_date"] for item in
+            self.store.list_recurring_mission_occurrences(self.workspace.id, schedule["id"])
+        ]
+        self.assertEqual(dates, ["2026-11-23", "2026-11-25", "2026-11-30"])
+
+    def test_dst_nonexistent_time_can_be_skipped_or_shifted_forward(self):
+        skipped = self.store.create_recurring_mission_schedule(
+            self.workspace.id, "Skip DST gap", {}, "daily", "02:30",
+            "America/New_York", "2027-03-14",
+            dst_nonexistent_policy="skip", idempotency_key="skip-gap",
+        )
+        shifted = self.store.create_recurring_mission_schedule(
+            self.workspace.id, "Shift DST gap", {}, "daily", "02:30",
+            "America/New_York", "2027-03-14",
+            dst_nonexistent_policy="shift_forward", idempotency_key="shift-gap",
+        )
+        self.assertEqual(skipped["next_local_date"], "2027-03-15")
+        self.assertEqual(shifted["next_local_date"], "2027-03-14")
+        self.assertEqual(
+            shifted["next_run_utc"], "2027-03-14T07:00:00+00:00",
+        )
+
+    def test_dst_ambiguous_time_respects_first_and_second_occurrence(self):
+        first = self.store.create_recurring_mission_schedule(
+            self.workspace.id, "First fold", {}, "daily", "01:30",
+            "America/New_York", "2027-11-07",
+            dst_ambiguous_policy="first", idempotency_key="first-fold",
+        )
+        second = self.store.create_recurring_mission_schedule(
+            self.workspace.id, "Second fold", {}, "daily", "01:30",
+            "America/New_York", "2027-11-07",
+            dst_ambiguous_policy="second", idempotency_key="second-fold",
+        )
+        self.assertEqual(
+            first["next_run_utc"], "2027-11-07T05:30:00+00:00",
+        )
+        self.assertEqual(
+            second["next_run_utc"], "2027-11-07T06:30:00+00:00",
+        )
+
+    def test_recurring_schedule_restart_recovery_and_concurrent_promotion(self):
+        schedule = self.store.create_recurring_mission_schedule(
+            self.workspace.id, "Concurrent daily", {}, "daily", "08:00",
+            "Africa/Gaborone", "2026-11-23",
+        )
+        restarted = TaskStore(self.db_path)
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            results = list(pool.map(
+                lambda _: restarted.promote_due_recurring_mission_schedules(
+                    self.workspace.id, now="2026-11-23T09:00:00+02:00",
+                ),
+                range(6),
+            ))
+        jobs = [job for batch in results for job in batch]
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(len(restarted.list_mission_jobs(self.workspace.id)), 1)
+        self.assertEqual(
+            restarted.get_recurring_mission_schedule(self.workspace.id, schedule["id"])["next_local_date"],
+            "2026-11-24",
+        )
+
+    def test_disabled_and_cancelled_recurring_schedules_do_not_promote(self):
+        disabled = self.store.create_recurring_mission_schedule(
+            self.workspace.id, "Disabled", {}, "daily", "08:00",
+            "Africa/Gaborone", "2026-11-23",
+        )
+        cancelled = self.store.create_recurring_mission_schedule(
+            self.workspace.id, "Cancelled", {}, "daily", "08:00",
+            "Africa/Gaborone", "2026-11-23",
+        )
+        self.store.set_recurring_mission_schedule_status(
+            self.workspace.id, disabled["id"], "disabled",
+        )
+        self.store.set_recurring_mission_schedule_status(
+            self.workspace.id, cancelled["id"], "cancelled",
+        )
+        self.assertEqual(
+            self.store.promote_due_recurring_mission_schedules(
+                self.workspace.id, now="2026-11-24T09:00:00+02:00",
+            ), [],
+        )
+        self.assertEqual(self.store.list_mission_jobs(self.workspace.id), [])
+

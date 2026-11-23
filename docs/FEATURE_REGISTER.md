@@ -11,7 +11,7 @@ Each capability must have a real user outcome, permission model, online/offline 
 | Measure | Count |
 |---|---:|
 | Verified / released | 13 |
-| In testing | 0 |
+| In testing | 3 |
 | Planned | 0 |
 | Minimum product target | 200 |
 
@@ -39,6 +39,10 @@ Ten mission-runtime capabilities are now counted as verified based on the user's
 | SCHED-001 | Durable one-time schedule definitions | Save a future mission schedule that survives application restarts | Workspace-scoped mission scheduling permission | Offline-capable | SQLite schedule store | Migration, persistence, workspace isolation, idempotent create | VERIFIED |
 | SCHED-002 | Timezone-aware one-time scheduling | Schedule a mission using an explicit IANA timezone and UTC offset | Workspace-scoped mission scheduling permission | Offline-capable | SCHED-001; Python zoneinfo and tzdata | Reject naive, unknown, or mismatched timezone inputs; normalize due time to UTC | VERIFIED |
 | SCHED-003 | Idempotent due-schedule promotion | Convert each due schedule into exactly one existing queue job | Workspace-scoped scheduler/queue permission | Offline-capable | SCHED-001; mission queue | Due gating, atomic concurrent promotion, queue linkage, audit events | VERIFIED |
+
+| SCHED-004 | Durable recurring schedule definitions | Save daily or selected-weekday missions that survive restarts | Workspace-scoped scheduling permission | Offline-capable | Schema v8; IANA timezone database | Daily/weekly persistence, idempotency, workspace isolation, restart tests | TESTING |
+| SCHED-005 | Explicit daylight-saving-time policies | Choose how nonexistent and ambiguous local times are handled | Schedule-owner configuration | Offline-capable | SCHED-004; Python zoneinfo | Spring-forward skip/shift and fall-back first/second-fold tests | TESTING |
+| SCHED-006 | Idempotent recurring occurrence promotion | Catch up due occurrences without duplicate queue jobs after restart or concurrent scheduler workers | Workspace-scoped scheduler/queue permission | Offline-capable | SCHED-004; mission queue | Missed-run catch-up, unique occurrence keys, concurrent promotion and audit tests | TESTING |
 
 ## Backlog policy
 
