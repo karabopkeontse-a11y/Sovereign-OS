@@ -154,7 +154,29 @@ def resume_collaboration(
                 [SystemMessage(content=system), HumanMessage(content=prompt)],
                 start_index=start_index,
             )
-            reply = _content(response)
+            reply = _content(response).strip()
+            if not reply:
+                # A provider can return successfully with an empty body. Treat
+                # that as an unusable completion and try one other configured
+                # candidate before persisting a failed checkpoint.
+                candidates = getattr(router, "candidates", [])
+                if len(candidates) > 1:
+                    fallback_index = (int(_get(info, "index", start_index)) + 1) % len(candidates)
+                    response, fallback_info, _ = router.invoke(
+                        [SystemMessage(content=system), HumanMessage(content=prompt)],
+                        start_index=fallback_index,
+                        candidate_indices=[fallback_index],
+                    )
+                    fallback_reply = _content(response).strip()
+                    if fallback_reply:
+                        reply, info = fallback_reply, fallback_info
+                if not reply:
+                    raise RuntimeError(
+                        f"Model returned an empty response for collaboration stage "
+                        f"'{stage}' (provider {info.provider}, model {info.model}). "
+                        "No checkpoint was completed. Check model output limits or "
+                        "provider health before resuming this stage."
+                    )
             store.complete_agent_collaboration_checkpoint(
                 workspace_id, checkpoint["id"], reply, speaker_type,
                 agent_id, provider=info.provider, model=info.model,
