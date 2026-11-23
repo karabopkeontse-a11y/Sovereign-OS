@@ -70,7 +70,7 @@ def execute_registered_step(
             )
             ready = candidate.status in {"planned", "approved"}
             recoverable = bool(candidate_receipt) and candidate.status in {
-                "running", "verifying", "blocked", "verified"
+                "running", "verifying", "blocked"
             }
             if candidate_spec and (ready or recoverable):
                 selected, spec = candidate, candidate_spec
