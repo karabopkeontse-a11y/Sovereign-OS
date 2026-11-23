@@ -196,13 +196,13 @@ class ModelRouterTests(unittest.TestCase):
             environ={"SOVEREIGN_MODEL_MAX_ATTEMPTS": "3"},
             clock=clock,
             sleeper=lambda delay: (waits.append(delay), clock.advance(delay)),
-            random_source=lambda: 0.0,
+            random_source=lambda: 1.0,
         )
         router.candidates = [ModelCandidate(ModelInfo("Provider A", "model-a", "cloud"), client)]
         chunks = list(router.stream([]))
         self.assertEqual([item[0] for item in chunks], ["recovered"])
         self.assertEqual(client.calls, 2)
-        self.assertEqual(len(waits), 1)
+        self.assertEqual(waits, [0.5])
 
     def test_quota_errors_are_classified(self):
         self.assertTrue(is_capacity_error(FakeError("quota")))
