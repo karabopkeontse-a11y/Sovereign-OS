@@ -182,7 +182,7 @@ class SovereignAPITests(unittest.TestCase):
                 "Access-Control-Request-Method": "POST",
                 "Access-Control-Request-Headers": (
                     "authorization,content-type,x-sovereign-language,"
-                    "x-sovereign-cloud-consent"
+                    "x-sovereign-cloud-consent,idempotency-key"
                 ),
             },
         )
