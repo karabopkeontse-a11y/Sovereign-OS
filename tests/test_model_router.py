@@ -75,6 +75,37 @@ class ModelRouterTests(unittest.TestCase):
         self.assertTrue(is_capacity_error(RuntimeError("maximum context length exceeded")))
         self.assertFalse(is_capacity_error(ValueError("invalid prompt structure")))
 
+    def test_authentication_and_malformed_request_errors_are_not_capacity(self):
+        class HttpError(Exception):
+            def __init__(self, status_code, message):
+                super().__init__(message)
+                self.status_code = status_code
+
+        self.assertFalse(is_capacity_error(HttpError(401, "invalid API key")))
+        self.assertFalse(is_capacity_error(HttpError(403, "permission denied")))
+        self.assertFalse(is_capacity_error(HttpError(400, "invalid request schema")))
+        self.assertFalse(is_capacity_error(HttpError(404, "route not found")))
+        self.assertTrue(is_capacity_error(HttpError(404, "model not found")))
+        self.assertTrue(is_capacity_error(HttpError(429, "rate limited")))
+        self.assertTrue(is_capacity_error(HttpError(503, "service unavailable")))
+
+    def test_model_specific_failure_does_not_cool_down_entire_provider(self):
+        class HttpError(Exception):
+            status_code = 404
+
+        clock = FakeClock()
+        router = ModelRouter(environ={}, clock=clock)
+        router.candidates = [
+            candidate("Provider A", "missing-model", HttpError("model not found")),
+            candidate("Provider A", "working-model", "fallback on same provider"),
+        ]
+        result, info, index = router.invoke([], tools=[])
+        self.assertEqual(result, "fallback on same provider")
+        self.assertEqual(info.model, "working-model")
+        self.assertEqual(index, 1)
+        self.assertEqual(router.health_snapshot()[0]["status"], "cooldown")
+        self.assertNotEqual(router.health_snapshot()[1]["status"], "cooldown")
+
     def test_falls_back_after_rate_limit(self):
         router = ModelRouter(environ={})
         router.candidates = [candidate("Provider A", "model-a", FakeError("rate limit")),
