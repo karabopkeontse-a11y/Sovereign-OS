@@ -217,6 +217,19 @@ class MissionWorkerSupervisorTests(unittest.TestCase):
             self.workspace.id, "Registered agent step",
             {"kind": "registered_agent_step", "problem_id": "p1", "step_id": "s1"},
         )
+        stale_generic = self.store.create_mission_job(
+            self.workspace.id, "Unrelated expired job", {"topic": "Do not touch"},
+            max_attempts=1,
+        )
+        self.store.claim_mission_job(
+            self.workspace.id, "unrelated-old-worker", lease_seconds=10
+        )
+        expired_at = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+        with self.store._connection() as db:
+            db.execute(
+                "UPDATE mission_jobs SET lease_expires_at=? WHERE id=?",
+                (expired_at, stale_generic["id"]),
+            )
         calls = []
         worker = MissionWorkerSupervisor(
             self.store,
@@ -236,6 +249,10 @@ class MissionWorkerSupervisorTests(unittest.TestCase):
         self.assertEqual(
             self.store.get_mission_job(self.workspace.id, generic["id"])["status"],
             "queued",
+        )
+        self.assertEqual(
+            self.store.get_mission_job(self.workspace.id, stale_generic["id"])["status"],
+            "running",
         )
 
     def test_shutdown_stops_claiming_after_current_executor_returns(self):
