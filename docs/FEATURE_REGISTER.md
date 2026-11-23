@@ -34,9 +34,9 @@ Ten mission-runtime capabilities are now counted as verified based on the user's
 
 | MISSION-011 | Independent durable mission worker supervisor | Execute claimed missions outside API and browser lifetimes and persist verified outcomes | Workspace-scoped worker identity; explicit executor registration; lease-owner-only lifecycle updates | Offline-capable core; executor declares its own connectivity | MISSION-001 through MISSION-010; explicit executor interface | Result persistence, heartbeat, retry backoff, non-retryable failure, attempt exhaustion, shutdown, workspace isolation; user-reported local acceptance: 8/8 passed (2026-11-23) | VERIFIED |
 
-| MISSION-012 | Permission-aware registered agent step execution and recovery | Execute approved workspace tools once, persist execution intent and reconcile interrupted file operations without overwriting conflicting data | Workspace-scoped task/step; persisted approval for non-read-only actions; registered tools only | Offline-capable workspace tools | MISSION-011; TaskStore; registered workspace tools | Atomic concurrent claim; receipt persistence and replay; crash after note creation; effect-applied recovery; conflicting-file protection; 9 focused tests added, awaiting user execution | TESTING |
+| MISSION-012 | Permission-aware registered agent step execution and recovery | Execute approved workspace tools once, persist execution intent and reconcile interrupted file operations without overwriting conflicting data | Workspace-scoped task/step; persisted approval for non-read-only actions; registered tools only | Offline-capable workspace tools | MISSION-011; TaskStore; registered workspace tools | Atomic concurrent claim; receipt persistence and replay; crash after note creation; effect-applied recovery; conflicting-file protection; user-reported local acceptance: 9/9 passed (2026-11-23) | TESTING |
 
-## Mission scheduling
+MISSION-012 receipt/concurrency/recovery tests are verified from the user's focused local acceptance result: 9/9 passed (2026-11-23). The durable-worker adapter is now in development and still requires its own integration tests. This is not a full-repository test claim.\n\n## Mission scheduling
 
 | Stable ID | Capability | User outcome | Permissions | Connectivity | Dependencies | Verification / tests | Status |
 |---|---|---|---|---|---|---|---|

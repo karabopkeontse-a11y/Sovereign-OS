@@ -325,3 +325,73 @@ def execute_registered_step(
         raise AgentStepExecutionError(
             500, "Agent tool failed safely: " + type(exc).__name__ + ": " + str(exc)
         ) from exc
+
+
+def registered_agent_step_executor(store, db_path):
+    """Build the durable-worker adapter for one persisted registered agent step.
+
+    Mission payload contract:
+      {"kind": "registered_agent_step", "problem_id": "...", "step_id": "..."}
+
+    The workspace comes only from the claimed mission record. The persisted task,
+    step specification, approval event, and execution receipt remain authoritative.
+    """
+    from .worker import MissionExecutionError
+
+    def execute(job, context):
+        payload = job.get("payload")
+        if not isinstance(payload, dict) or payload.get("kind") != "registered_agent_step":
+            raise MissionExecutionError(
+                "Unsupported mission payload kind; expected registered_agent_step.",
+                retryable=False,
+            )
+        problem_id = payload.get("problem_id")
+        step_id = payload.get("step_id")
+        if not isinstance(problem_id, str) or not problem_id.strip():
+            raise MissionExecutionError(
+                "Registered agent mission is missing problem_id.", retryable=False
+            )
+        if not isinstance(step_id, str) or not step_id.strip():
+            raise MissionExecutionError(
+                "Registered agent mission is missing step_id.", retryable=False
+            )
+
+        context.check_cancelled()
+        try:
+            result = execute_registered_step(
+                store,
+                db_path,
+                context.workspace_id,
+                problem_id.strip(),
+                step_id=step_id.strip(),
+                recover_interrupted=True,
+            )
+        except AgentStepExecutionError as exc:
+            # Permission failures, invalid task references, and uncertain external
+            # effects need human correction, not blind queue retries.
+            raise MissionExecutionError(
+                f"Registered agent step rejected ({exc.status_code}): {exc.detail}",
+                retryable=False,
+            ) from exc
+
+        # A shutdown after a verified step is safe: the queue job is retried and
+        # the next worker replays the durable verified receipt without repeating
+        # the tool. A lost lease leaves the queue job reclaimable by its owner.
+        context.check_cancelled()
+        if not result.get("verified"):
+            raise MissionExecutionError(
+                "Registered agent step did not produce verified evidence.",
+                retryable=False,
+            )
+        step = result.get("step") or {}
+        return {
+            "task_id": result["task_id"],
+            "step_id": step_id.strip(),
+            "step_status": step.get("status"),
+            "verified": True,
+            "replayed": bool(result.get("replayed")),
+            "reconciled": bool(result.get("reconciled")),
+            "tool_result": result.get("tool_result") or {},
+        }
+
+    return execute
