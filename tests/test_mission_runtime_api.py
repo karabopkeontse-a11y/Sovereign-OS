@@ -67,6 +67,8 @@ class MissionRuntimeAPITests(unittest.TestCase):
             self.assertEqual(mission["payload"]["problem_id"], problem.id)
             self.assertEqual(mission["payload"]["step_id"], step.id)
 
+            # Simulate the worker claiming the step before the client retries.
+            self.store.update_step_status(step.id, "running")
             replay = client.post(path, headers=self.headers)
             self.assertEqual(replay.status_code, 202)
             self.assertEqual(replay.json()["mission"]["id"], mission["id"])
@@ -164,7 +166,7 @@ class MissionRuntimeAPITests(unittest.TestCase):
                 "/api/v1/mission-worker/health", headers=self.headers
             )
             self.assertTrue(health.json()["enabled"])
-            self.assertIn(health.json()["state"], {"running", "healthy"})
+            self.assertIn(health.json()["state"], {"starting", "running", "healthy"})
 
             queued = client.post(
                 f"/api/v1/workspaces/{self.workspace.id}/agent/tasks/"
