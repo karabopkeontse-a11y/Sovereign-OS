@@ -150,7 +150,7 @@ def resume_collaboration(
             increment_attempts=True,
         )
         try:
-            response, info, _ = router.invoke(
+            response, info, selected_index = router.invoke(
                 [SystemMessage(content=system), HumanMessage(content=prompt)],
                 start_index=start_index,
             )
@@ -161,7 +161,7 @@ def resume_collaboration(
                 # candidate before persisting a failed checkpoint.
                 candidates = getattr(router, "candidates", [])
                 if len(candidates) > 1:
-                    fallback_index = (int(_get(info, "index", start_index)) + 1) % len(candidates)
+                    fallback_index = (int(selected_index) + 1) % len(candidates)
                     response, fallback_info, _ = router.invoke(
                         [SystemMessage(content=system), HumanMessage(content=prompt)],
                         start_index=fallback_index,
