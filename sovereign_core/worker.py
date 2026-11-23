@@ -205,6 +205,7 @@ class MissionWorkerSupervisor:
 
     def run_once(self) -> dict:
         claimed = 0
+        cycle_error = None
         for workspace in self.store.list_workspaces():
             for _ in range(self.batch_limit):
                 if self.stop_event.is_set():
