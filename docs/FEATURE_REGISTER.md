@@ -10,8 +10,8 @@ Each capability must have a real user outcome, permission model, online/offline 
 
 | Measure | Count |
 |---|---:|
-| Verified / released | 17 |
-| In testing | 1 |
+| Verified / released | 18 |
+| In testing | 0 |
 | Planned | 0 |
 | Minimum product target | 200 |
 
@@ -32,7 +32,7 @@ Ten mission-runtime capabilities are now counted as verified based on the user's
 | MISSION-009 | Bounded mission attempts | Interrupted work cannot retry forever | Mission policy | Offline-capable | MISSION-008 | Exhausted expired lease becomes failed | VERIFIED |
 | MISSION-010 | Audited mission lifecycle | Pause, resume, completion, failure and cancellation have durable event history | Workspace-scoped mission control; running changes require lease owner | Offline-capable | MISSION-001 | Verify valid transitions and ordered event history | VERIFIED |
 
-| MISSION-011 | Independent durable mission worker supervisor | Execute claimed missions outside API and browser lifetimes and persist verified outcomes | Workspace-scoped worker identity; explicit executor registration; lease-owner-only lifecycle updates | Offline-capable core; executor declares its own connectivity | MISSION-001 through MISSION-010; explicit executor interface | Result persistence, heartbeat, retry backoff, non-retryable failure, attempt exhaustion, shutdown, workspace isolation | TESTING |
+| MISSION-011 | Independent durable mission worker supervisor | Execute claimed missions outside API and browser lifetimes and persist verified outcomes | Workspace-scoped worker identity; explicit executor registration; lease-owner-only lifecycle updates | Offline-capable core; executor declares its own connectivity | MISSION-001 through MISSION-010; explicit executor interface | Result persistence, heartbeat, retry backoff, non-retryable failure, attempt exhaustion, shutdown, workspace isolation; user-reported local acceptance: 8/8 passed (2026-11-23) | VERIFIED |
 
 ## Mission scheduling
 
@@ -50,7 +50,7 @@ Ten mission-runtime capabilities are now counted as verified based on the user's
 
 SCHED-007 is verified from the user's focused local acceptance results: scheduler supervisor 5/5 and mission runtime 23/23 passed (2026-11-23). This is not a full-repository test claim.
 
-MISSION-011 implementation is committed for local acceptance testing. It introduces an explicit executor interface, independent worker process, lease heartbeats, durable results, bounded exponential retry scheduling, terminal failure handling, and graceful stop. Do not count it until focused local tests pass.
+MISSION-011 is verified from the user's focused local acceptance result: worker supervisor 8/8 passed (2026-11-23), with worker/store syntax compilation also successful. The heartbeat test checks the persisted heartbeat during execution; terminal transitions correctly clear active heartbeat and lease fields. This is not a full-repository test claim.
 
 ## Backlog policy
 
