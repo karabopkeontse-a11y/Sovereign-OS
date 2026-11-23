@@ -2037,7 +2037,10 @@ def start_embedded_api():
         raise RuntimeError("No free local API port found between the configured port and the next 19 ports.")
     os.environ["SOVEREIGN_API_PORT"] = str(port)
     token = os.getenv("SOVEREIGN_API_TOKEN", "").strip() or secrets.token_urlsafe(32)
-    api_app = create_app(db_path=WORKSPACE_DB, router=MODEL_ROUTER, token=token)
+    api_app = create_app(
+        db_path=WORKSPACE_DB, router=MODEL_ROUTER, token=token,
+        enable_mission_worker=True,
+    )
     config = uvicorn.Config(api_app, host=host, port=port, log_level="warning",
                             access_log=False, loop="asyncio")
     server = uvicorn.Server(config)
