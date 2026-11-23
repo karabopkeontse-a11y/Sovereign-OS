@@ -1,7 +1,10 @@
 ﻿import unittest
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 
 from sovereign_core.orchestration import run_collaboration
+from sovereign_core.store import TaskStore
 
 
 class FakeStore:
@@ -93,11 +96,14 @@ class FakeRouter:
         ]
         self.calls = 0
         self.invocations = []
+        self.fail_at = None
 
     def invoke(self, messages, start_index=None, **kwargs):
         index = start_index or 0
         info = self.candidates[index].info
         self.calls += 1
+        if self.fail_at == self.calls:
+            raise RuntimeError('Simulated provider interruption')
         prompt = "\n".join(
             str(getattr(message, "content", message))
             for message in messages
@@ -216,6 +222,68 @@ class OrchestrationTests(unittest.TestCase):
             run_collaboration(
                 self.store, self.router, self.workspace, "Test task"
             )
+
+
+
+class DurableOrchestrationRecoveryTests(unittest.TestCase):
+    def test_retry_reuses_completed_checkpoints_and_does_not_duplicate_messages(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = TaskStore(Path(directory) / "durable.sqlite3")
+            workspace = store.create_workspace(
+                "Durable Test", "Test resumable collaboration"
+            )
+            leader = store.create_agent_identity(
+                workspace.id, "leader", "Sovereign Lead"
+            )
+            discussion = store.create_agent_discussion(
+                workspace.id, "Resume this mission", leader["id"]
+            )
+            run = store.create_agent_collaboration_run(
+                workspace.id, discussion["id"], "Prepare a safe launch plan",
+                specialist_ids=["specialist-0", "specialist-1"],
+                max_agents=2, request_key="durable-retry-test",
+            )
+            router = FakeRouter()
+            router.fail_at = 4
+
+            with self.assertRaisesRegex(RuntimeError, "Simulated provider interruption"):
+                run_collaboration(
+                    store, router, workspace, run["task"],
+                    specialist_ids=["specialist-0", "specialist-1"],
+                    run_id=run["id"], discussion_id=discussion["id"],
+                )
+
+            saved = store.list_agent_collaboration_checkpoints(
+                workspace.id, run["id"]
+            )
+            self.assertEqual(
+                sum(item["status"] == "completed" for item in saved), 3
+            )
+            self.assertEqual(
+                len(store.list_agent_messages(workspace.id, discussion["id"])), 4
+            )
+            self.assertEqual(
+                store.get_agent_collaboration_run(workspace.id, run["id"])["status"],
+                "retryable",
+            )
+
+            router.fail_at = None
+            result = run_collaboration(
+                store, router, workspace, run["task"],
+                specialist_ids=["specialist-0", "specialist-1"],
+                run_id=run["id"], discussion_id=discussion["id"],
+            )
+
+            checkpoints = store.list_agent_collaboration_checkpoints(
+                workspace.id, run["id"]
+            )
+            messages = store.list_agent_messages(workspace.id, discussion["id"])
+            self.assertEqual(result["status"], "completed")
+            self.assertEqual(len(checkpoints), 7)
+            self.assertTrue(all(item["status"] == "completed" for item in checkpoints))
+            self.assertEqual(len(messages), 8)
+            self.assertEqual(sum(m["speaker_type"] == "user" for m in messages), 1)
+            self.assertEqual(router.calls, 8)
 
 
 if __name__ == "__main__":
