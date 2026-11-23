@@ -1007,7 +1007,7 @@ def create_app(db_path=None, router=None, token=None):
                         max_agents=payload.max_agents,
                         request_key=request_key,
                     )
-            if run["status"] in {"queued", "retryable", "running"}:
+            if run["status"] in {"queued", "retryable"}:
                 with _collaboration_active_lock:
                     worker_active = run["id"] in _collaboration_active_runs
                 if not worker_active:
