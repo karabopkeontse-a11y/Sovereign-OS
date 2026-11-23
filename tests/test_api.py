@@ -152,6 +152,7 @@ class SovereignAPITests(unittest.TestCase):
         )
         self.assertEqual(status.status_code, 200)
         self.assertEqual(status.json()["run"]["status"], "completed")
+        self.assertNotIn("memory_context", status.json()["run"])
         self.assertEqual(len(status.json()["checkpoints"]), 7)
         other_workspace_id = next(
             item["id"] for item in workspaces if item["id"] != workspace_id
