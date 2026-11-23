@@ -390,10 +390,36 @@ class TaskStore:
                 VALUES (4, 'durable_agent_collaboration_recovery', ?)
             """, (_now(),))
 
+        version = db.execute(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations"
+        ).fetchone()[0]
+        if version < 5:
+            columns = {
+                row[1] for row in db.execute(
+                    "PRAGMA table_info(agent_collaboration_runs)"
+                ).fetchall()
+            }
+            if "request_key" not in columns:
+                db.execute(
+                    "ALTER TABLE agent_collaboration_runs "
+                    "ADD COLUMN request_key TEXT NOT NULL DEFAULT ''"
+                )
+            db.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS
+                idx_agent_collaboration_runs_request_key
+                ON agent_collaboration_runs(workspace_id, request_key)
+                WHERE request_key <> ''
+            """)
+            db.execute("""
+                INSERT INTO schema_migrations(version, name, applied_at)
+                VALUES (5, 'idempotent_agent_collaboration_requests', ?)
+            """, (_now(),))
+
     def create_agent_collaboration_run(
         self, workspace_id: str, discussion_id: str, task: str,
         conversation_id: str | None = None, memory_context: str = "",
-        specialist_ids: list[str] | None = None, max_agents: int = 4
+        specialist_ids: list[str] | None = None, max_agents: int = 4,
+        request_key: str = ""
     ) -> dict:
         import json
 
@@ -402,8 +428,26 @@ class TaskStore:
             raise ValueError("Collaboration task is required")
         if not 1 <= int(max_agents) <= 4:
             raise ValueError("max_agents must be between 1 and 4")
+        request_key = (request_key or "").strip()
+        if len(request_key) > 200:
+            raise ValueError("Idempotency key is too long")
         now, run_id = _now(), str(uuid4())
+        selected_json = json.dumps(specialist_ids or [])
         with self._connection() as db:
+            if request_key:
+                existing = db.execute("""
+                    SELECT * FROM agent_collaboration_runs
+                    WHERE workspace_id=? AND request_key=?
+                """, (workspace_id, request_key)).fetchone()
+                if existing:
+                    if (existing["task"] != task
+                        or existing["conversation_id"] != conversation_id
+                        or existing["specialist_ids_json"] != selected_json
+                        or existing["max_agents"] != int(max_agents)):
+                        raise ValueError(
+                            "Idempotency key was already used for a different mission"
+                        )
+                    return dict(existing)
             discussion = db.execute("""
                 SELECT id, status, conversation_id FROM agent_discussions
                 WHERE id=? AND workspace_id=?
@@ -415,20 +459,35 @@ class TaskStore:
             if conversation_id and discussion["conversation_id"] not in (None, conversation_id):
                 raise ValueError("Conversation does not match the discussion")
             db.execute("""
-                INSERT INTO agent_collaboration_runs (
+                INSERT OR IGNORE INTO agent_collaboration_runs (
                     id, workspace_id, discussion_id, task, conversation_id,
                     memory_context, specialist_ids_json, max_agents, status,
-                    current_stage, attempts, last_error, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', 'queued', 0, '', ?, ?)
+                    current_stage, attempts, last_error, created_at, updated_at,
+                    request_key
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', 'queued', 0, '', ?, ?, ?)
             """, (
                 run_id, workspace_id, discussion_id, task, conversation_id,
-                memory_context or "", json.dumps(specialist_ids or []),
-                int(max_agents), now, now
+                memory_context or "", selected_json, int(max_agents), now, now,
+                request_key
             ))
             row = db.execute("""
                 SELECT * FROM agent_collaboration_runs
-                WHERE id=? AND workspace_id=?
-            """, (run_id, workspace_id)).fetchone()
+                WHERE workspace_id=? AND (
+                    id=? OR (? <> '' AND request_key=?)
+                )
+                ORDER BY CASE WHEN id=? THEN 0 ELSE 1 END LIMIT 1
+            """, (workspace_id, run_id, request_key, request_key, run_id)).fetchone()
+            if not row:
+                raise RuntimeError("Could not persist collaboration run")
+            if row["id"] != run_id and (
+                row["task"] != task
+                or row["conversation_id"] != conversation_id
+                or row["specialist_ids_json"] != selected_json
+                or row["max_agents"] != int(max_agents)
+            ):
+                raise ValueError(
+                    "Idempotency key was already used for a different mission"
+                )
             return dict(row)
 
     def get_agent_collaboration_run(
