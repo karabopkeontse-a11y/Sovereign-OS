@@ -40,7 +40,13 @@ class CollaborationRecoveryStoreTests(unittest.TestCase):
                     "SELECT name FROM sqlite_master WHERE type='table'"
                 )
             }
+            run_columns = {
+                row[1] for row in db.execute(
+                    "PRAGMA table_info(agent_collaboration_runs)"
+                )
+            }
         self.assertEqual(version, 5)
+        self.assertIn("request_key", run_columns)
         self.assertTrue({
             "plugins", "workspace_metadata", "workspace_plugins",
             "agent_discussions", "agent_assignments",
