@@ -116,11 +116,16 @@ def execute_registered_step(
                 passed, criterion, evidence = verify_workspace_tool(
                     spec["tool_name"], arguments, reconciled_result, root
                 )
-                store.update_step_status(selected.id, "verifying")
-                store.record_verification(
-                    selected.id, spec["verification_criterion"] or criterion,
-                    "durable receipt recovery and server-side read-back", passed, evidence,
-                )
+                current_step = store.get_step(selected.id)
+                if current_step and current_step.status == "running":
+                    store.update_step_status(selected.id, "verifying")
+                if current_step and current_step.status in {"running", "verifying"}:
+                    store.record_verification(
+                        selected.id, spec["verification_criterion"] or criterion,
+                        "durable receipt recovery and server-side read-back", passed, evidence,
+                    )
+                elif not current_step or current_step.status != "verified":
+                    raise AgentStepExecutionError(409, "The interrupted step is not in a recoverable state.")
                 store.update_step_execution_receipt(
                     workspace.id, selected.id, "verified" if passed else "failed",
                     result=reconciled_result, evidence_reference=evidence,
