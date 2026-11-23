@@ -490,6 +490,74 @@ class TaskStore:
                 )
             return dict(row)
 
+    def create_agent_collaboration_run_with_discussion(
+        self, workspace_id: str, leader_agent_id: str, task: str,
+        conversation_id: str | None = None, memory_context: str = "",
+        specialist_ids: list[str] | None = None, max_agents: int = 4,
+        request_key: str = ""
+    ) -> dict:
+        """Atomically create one discussion and its idempotent collaboration run."""
+        import json
+
+        task = (task or "").strip()
+        request_key = (request_key or "").strip()
+        if not task:
+            raise ValueError("Collaboration task is required")
+        if not request_key or len(request_key) > 200:
+            raise ValueError("A valid idempotency key is required")
+        if not 1 <= int(max_agents) <= 4:
+            raise ValueError("max_agents must be between 1 and 4")
+        selected_json = json.dumps(specialist_ids or [])
+        with self._connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            existing = db.execute("""
+                SELECT * FROM agent_collaboration_runs
+                WHERE workspace_id=? AND request_key=?
+            """, (workspace_id, request_key)).fetchone()
+            if existing:
+                if (existing["task"] != task
+                    or existing["conversation_id"] != conversation_id
+                    or existing["specialist_ids_json"] != selected_json
+                    or existing["max_agents"] != int(max_agents)):
+                    raise ValueError(
+                        "Idempotency key was already used for a different mission"
+                    )
+                return dict(existing)
+            leader = db.execute("""
+                SELECT id FROM agent_identities
+                WHERE id=? AND workspace_id=?
+            """, (leader_agent_id, workspace_id)).fetchone()
+            if not leader:
+                raise ValueError("Leader agent does not belong to this workspace")
+            now = _now()
+            discussion_id, run_id = str(uuid4()), str(uuid4())
+            db.execute("""
+                INSERT INTO agent_discussions (
+                    id, workspace_id, title, status, leader_agent_id,
+                    conversation_id, created_at, updated_at
+                ) VALUES (?, ?, ?, 'open', ?, ?, ?, ?)
+            """, (
+                discussion_id, workspace_id, task[:240], leader_agent_id,
+                conversation_id, now, now,
+            ))
+            db.execute("""
+                INSERT INTO agent_collaboration_runs (
+                    id, workspace_id, discussion_id, task, conversation_id,
+                    memory_context, specialist_ids_json, max_agents, status,
+                    current_stage, attempts, last_error, created_at, updated_at,
+                    request_key
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', 'queued', 0, '', ?, ?, ?)
+            """, (
+                run_id, workspace_id, discussion_id, task, conversation_id,
+                memory_context or "", selected_json, int(max_agents),
+                now, now, request_key,
+            ))
+            row = db.execute("""
+                SELECT * FROM agent_collaboration_runs
+                WHERE id=? AND workspace_id=?
+            """, (run_id, workspace_id)).fetchone()
+            return dict(row)
+
     def claim_agent_collaboration_run(
         self, workspace_id: str, run_id: str
     ) -> bool:
