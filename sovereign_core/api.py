@@ -1299,109 +1299,13 @@ def create_app(db_path=None, router=None, token=None):
 
     @app.post("/api/v1/workspaces/{workspace_id}/agent/tasks/{problem_id}/execute-next", dependencies=[Depends(authorize)])
     def execute_next_agent_step(workspace_id: str, problem_id: str):
+        from .agent_execution import AgentStepExecutionError, execute_registered_step
         try:
-            workspace = state.workspaces.get_workspace(workspace_id)
-        except ValueError:
-            raise HTTPException(404, "Workspace not found")
-        tasks = state.workspaces.tasks
-        problem = tasks.get_problem(problem_id)
-        if not problem or problem.workspace_id != workspace.id:
-            raise HTTPException(404, "Task not found in this workspace")
-        if problem.status in {"blocked", "failed", "completed", "cancelled"}:
-            raise HTTPException(409, "This task is not in an executable state.")
-        selected = None
-        spec = None
-        for candidate in tasks.list_steps(problem.id):
-            candidate_spec = tasks.get_step_spec(candidate.id)
-            if candidate_spec and candidate.status in {"planned", "approved"}:
-                selected, spec = candidate, candidate_spec
-                break
-        if selected is None or spec is None:
-            raise HTTPException(409, "No registered tool step is ready. Review pending approvals or add a supported tool step.")
-        if selected.permission_level != "read_only" and selected.status != "approved":
-            raise HTTPException(403, "This tool step requires explicit approval before execution.")
-        started_at = None
-        started_clock = None
-        run_recorded = False
-        arguments = {}
-        input_summary = "{}"
-        try:
-            arguments = json.loads(spec["input_json"])
-            input_summary = json.dumps({
-                key: (f"[{len(value)} characters]" if key == "content" and isinstance(value, str) else value)
-                for key, value in arguments.items()
-            }, ensure_ascii=False)
-            root = workspace_root(state.db_path, workspace.id)
-            if problem.status in {"planned", "awaiting_approval"}:
-                tasks.set_problem_status(problem.id, "running")
-            tasks.update_step_status(selected.id, "running")
-            started_at = now()
-            started_clock = time.perf_counter()
-            result = execute_workspace_tool(spec["tool_name"], arguments, root)
-            passed, criterion, evidence = verify_workspace_tool(
-                spec["tool_name"], arguments, result, root
+            return execute_registered_step(
+                state.workspaces.tasks, state.db_path, workspace_id, problem_id
             )
-            tasks.update_step_status(selected.id, "verifying")
-            tasks.record_tool_run(
-                selected.id, spec["tool_name"], input_summary,
-                (f"Listed {result.get('count')} workspace files" if spec["tool_name"] == "workspace.list_files"
-                 else f"Read {result.get('path')} ({result.get('bytes')} bytes)" if spec["tool_name"] == "workspace.read_file"
-                 else f"Created {result.get('path')} ({result.get('bytes')} bytes)"),
-                "success" if passed else "verification_failed",
-                started_at, now(),
-            )
-            run_recorded = True
-            tasks.record_verification(
-                selected.id, spec["verification_criterion"] or criterion,
-                "server-side workspace boundary and read-back check",
-                passed, evidence,
-            )
-            if not passed:
-                current = tasks.get_problem(problem.id)
-                if current and current.status == "running":
-                    tasks.set_problem_status(problem.id, "failed")
-                raise HTTPException(500, "The tool ran, but its verification check failed.")
-            remaining = tasks.list_steps(problem.id)
-            if remaining and all(item.status == "verified" for item in remaining):
-                tasks.complete_problem(problem.id)
-            output = dict(result)
-            if isinstance(output.get("content"), str) and len(output["content"]) > 20000:
-                output["content"] = output["content"][:20000]
-                output["truncated"] = True
-            return {"task_id": problem.id, "step": tasks.get_step(selected.id).__dict__,
-                    "tool_result": output, "verified": True,
-                    "duration_ms": round((time.perf_counter() - started_clock) * 1000),
-                    "task_status": tasks.get_problem(problem.id).status}
-        except HTTPException:
-            raise
-        except Exception as exc:
-            if started_at and not run_recorded:
-                try:
-                    tasks.record_tool_run(
-                        selected.id, spec["tool_name"], input_summary,
-                        "Tool failed: " + type(exc).__name__, "failed", started_at, now()
-                    )
-                except Exception:
-                    pass
-            current_step = tasks.get_step(selected.id)
-            if current_step and current_step.status in {"running", "verifying"}:
-                try:
-                    if current_step.status == "running":
-                        tasks.update_step_status(selected.id, "failed")
-                    else:
-                        tasks.record_verification(
-                            selected.id, spec["verification_criterion"],
-                            "Execution error", False, type(exc).__name__
-                        )
-                except Exception:
-                    pass
-            current_problem = tasks.get_problem(problem.id)
-            if current_problem and current_problem.status == "running":
-                try:
-                    tasks.set_problem_status(problem.id, "failed")
-                except ValueError:
-                    pass
-            raise HTTPException(500, "Agent tool failed safely: " + type(exc).__name__ + ": " + str(exc))
+        except AgentStepExecutionError as exc:
+            raise HTTPException(exc.status_code, exc.detail) from exc
 
     @app.post("/api/v1/workspaces/{workspace_id}/agent/tasks/{problem_id}/run-safe", dependencies=[Depends(authorize)])
     def run_safe_agent_steps(workspace_id: str, problem_id: str):
