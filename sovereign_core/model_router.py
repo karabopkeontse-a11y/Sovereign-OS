@@ -97,10 +97,12 @@ def is_capacity_error(exc: Exception) -> bool:
     if any(marker in message for marker in quota_markers):
         return True
 
-    # 404 is only recoverable when it specifically identifies a missing model
-    # or route. A missing endpoint/path is usually a configuration mistake.
+    # A 404 is fallback-eligible only when the provider explicitly says the
+    # requested model ID is unavailable. Generic route/endpoint/path 404s are
+    # usually URL or deployment configuration faults and must surface directly.
     if status == 404 and any(marker in message for marker in (
-        "model", "endpoint", "deployment", "route"
+        "model_not_found", "model not found", "unknown model",
+        "model does not exist", "no such model",
     )):
         return True
     return False
