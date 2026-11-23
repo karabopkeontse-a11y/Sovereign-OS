@@ -2128,7 +2128,7 @@ class TaskStore:
     def set_mission_job_status(
         self, workspace_id: str, mission_id: str, status: str,
         worker_id: str | None = None, detail: str = "",
-        result: dict | None = None,
+        result: dict | None = None, retry_at: str | None = None,
     ) -> dict:
         """Apply a guarded mission transition and append an immutable event."""
         import json
@@ -2143,6 +2143,16 @@ class TaskStore:
         if status not in transitions:
             raise ValueError("Unknown mission status")
         result_json = json.dumps(result or {}, sort_keys=True)
+        if retry_at is not None:
+            if status != "retryable":
+                raise ValueError("retry_at is only valid for retryable missions")
+            try:
+                parsed_retry = datetime.fromisoformat(retry_at.replace("Z", "+00:00"))
+                if parsed_retry.tzinfo is None or parsed_retry.utcoffset() is None:
+                    raise ValueError
+                retry_at = parsed_retry.astimezone(timezone.utc).isoformat()
+            except (TypeError, ValueError) as exc:
+                raise ValueError("retry_at must be a timezone-aware ISO timestamp") from exc
         now = _now()
         with self._connection() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -2176,6 +2186,14 @@ class TaskStore:
                 """, (
                     status, (detail or "")[:2000], result_json, now, now,
                     mission_id, workspace_id,
+                ))
+            elif status == "retryable" and retry_at is not None:
+                db.execute("""
+                    UPDATE mission_jobs SET status=?, worker_id='', lease_expires_at=NULL,
+                        heartbeat_at=NULL, last_error=?, scheduled_at=?, updated_at=?
+                    WHERE id=? AND workspace_id=?
+                """, (
+                    status, (detail or "")[:2000], retry_at, now, mission_id, workspace_id,
                 ))
             else:
                 db.execute("""
