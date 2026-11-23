@@ -101,7 +101,7 @@ class RegisteredAgentWorkerTests(unittest.TestCase):
         self.assertEqual(saved_job["status"], "failed")
         self.assertIn("explicit approval", saved_job["last_error"])
         self.assertFalse(target.exists())
-        self.assertEqual(self.store.get_step(step.id).status, "planned")
+        self.assertEqual(self.store.get_step(step.id).status, "awaiting_approval")
 
     def test_shutdown_after_verified_step_retries_queue_and_replays_receipt(self):
         problem, step = self.create_step(
