@@ -15,6 +15,7 @@ from .agent_tools import (
     execute_workspace_tool,
     verify_workspace_tool,
     workspace_root,
+    validate_tool_input,
 )
 
 
@@ -51,9 +52,6 @@ def execute_registered_step(
     problem = store.get_problem(problem_id)
     if problem is None or problem.workspace_id != workspace.id:
         raise AgentStepExecutionError(404, "Task not found in this workspace")
-    if problem.status in {"blocked", "failed", "completed", "cancelled"}:
-        raise AgentStepExecutionError(409, "This task is not in an executable state.")
-
     steps = store.list_steps(problem.id)
     selected = None
     spec = None
@@ -75,33 +73,105 @@ def execute_registered_step(
         )
     if spec.get("tool_name") not in TOOLS:
         raise AgentStepExecutionError(403, "This step does not reference a registered workspace tool.")
-    if (
-        selected.status == "awaiting_approval"
-        and selected.permission_level != "read_only"
-    ):
-        raise AgentStepExecutionError(403, "This tool step requires explicit approval before execution.")
-    if selected.status not in {"planned", "approved"}:
-        raise AgentStepExecutionError(409, "This plan step is not ready for execution.")
-    if selected.permission_level != "read_only" and selected.status != "approved":
-        raise AgentStepExecutionError(403, "This tool step requires explicit approval before execution.")
 
-    if not store.claim_plan_step(selected.id, (selected.status,)):
-        raise AgentStepExecutionError(409, "This plan step has already been claimed or is no longer ready.")
+    try:
+        arguments = validate_tool_input(spec["tool_name"], json.loads(spec["input_json"]))
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise AgentStepExecutionError(400, "Registered tool input is invalid: " + str(exc)) from exc
+    canonical_input = json.dumps(arguments, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    receipt = store.get_step_execution_receipt(workspace.id, selected.id)
+    if receipt and (receipt["tool_name"] != spec["tool_name"] or receipt["input_json"] != spec["input_json"]):
+        raise AgentStepExecutionError(409, "The registered step changed after its execution receipt was created.")
 
-    started_at = None
+    if receipt and receipt["status"] == "verified":
+        saved_result = json.loads(receipt["result_json"] or "{}")
+        return {
+            "task_id": problem.id, "step": store.get_step(selected.id).__dict__,
+            "tool_result": saved_result, "verified": True, "duration_ms": 0,
+            "task_status": store.get_problem(problem.id).status,
+            "replayed": True,
+        }
+
+    root = workspace_root(db_path, workspace.id)
+    if receipt and receipt["status"] in {"executing", "effect_applied", "unknown"}:
+        if spec["tool_name"] == "workspace.create_note":
+            target = (root / arguments["filename"]).resolve()
+            try:
+                target.relative_to(root.resolve())
+            except ValueError as exc:
+                raise AgentStepExecutionError(400, "Receipt target resolves outside this workspace.") from exc
+            if target.exists():
+                if not target.is_file() or target.read_text(encoding="utf-8") != arguments["content"]:
+                    store.update_step_execution_receipt(
+                        workspace.id, selected.id, "unknown",
+                        error="A file exists at the approved path but does not match the approved content.",
+                    )
+                    current = store.get_step(selected.id)
+                    if current and current.status == "running":
+                        store.update_step_status(selected.id, "blocked")
+                    raise AgentStepExecutionError(409, "Execution outcome is uncertain: the target file exists with different content. It was not overwritten.")
+                reconciled_result = {
+                    "tool": "workspace.create_note", "path": arguments["filename"],
+                    "bytes": target.stat().st_size, "created": False, "reconciled": True,
+                }
+                passed, criterion, evidence = verify_workspace_tool(
+                    spec["tool_name"], arguments, reconciled_result, root
+                )
+                store.update_step_status(selected.id, "verifying")
+                store.record_verification(
+                    selected.id, spec["verification_criterion"] or criterion,
+                    "durable receipt recovery and server-side read-back", passed, evidence,
+                )
+                store.update_step_execution_receipt(
+                    workspace.id, selected.id, "verified" if passed else "failed",
+                    result=reconciled_result, evidence_reference=evidence,
+                    error="" if passed else "Recovered file failed read-back verification.",
+                )
+                if not passed:
+                    raise AgentStepExecutionError(500, "Recovered tool effect failed verification.")
+                remaining = store.list_steps(problem.id)
+                if remaining and all(item.status == "verified" for item in remaining):
+                    store.complete_problem(problem.id)
+                return {
+                    "task_id": problem.id, "step": store.get_step(selected.id).__dict__,
+                    "tool_result": reconciled_result, "verified": True,
+                    "duration_ms": 0, "task_status": store.get_problem(problem.id).status,
+                    "reconciled": True,
+                }
+        elif spec["tool_name"] not in {"workspace.list_files", "workspace.read_file"}:
+            raise AgentStepExecutionError(409, "This execution receipt requires manual reconciliation; the tool will not be repeated.")
+
+    if problem.status in {"blocked", "failed", "completed", "cancelled"} and not receipt:
+        raise AgentStepExecutionError(409, "This task is not in an executable state.")
+
+    if receipt is None:
+        if (
+            selected.status == "awaiting_approval"
+            and selected.permission_level != "read_only"
+        ):
+            raise AgentStepExecutionError(403, "This tool step requires explicit approval before execution.")
+        if selected.status not in {"planned", "approved"}:
+            raise AgentStepExecutionError(409, "This plan step is not ready for execution.")
+        if selected.permission_level != "read_only" and selected.status != "approved":
+            raise AgentStepExecutionError(403, "This tool step requires explicit approval before execution.")
+        receipt = store.claim_step_execution(
+            workspace.id, problem.id, selected.id, spec["tool_name"],
+            spec["input_json"], selected.status,
+        )
+        if receipt is None:
+            raise AgentStepExecutionError(409, "This plan step has already been claimed or is no longer ready.")
+    elif receipt["status"] not in {"prepared", "executing"}:
+        raise AgentStepExecutionError(409, "This execution receipt is not resumable.")
+
+    started_at = None;
     started_clock = None
     run_recorded = False
-    arguments = {}
-    input_summary = "{}"
-    try:
-        arguments = json.loads(spec["input_json"])
-        if not isinstance(arguments, dict):
-            raise ValueError("Registered tool arguments must be a JSON object.")
-        input_summary = json.dumps({
+    input_summary = json.dumps({
             key: (f"[{len(value)} characters]" if key == "content" and isinstance(value, str) else value)
             for key, value in arguments.items()
         }, ensure_ascii=False)
-        root = workspace_root(db_path, workspace.id)
+    try:
+        store.update_step_execution_receipt(workspace.id, selected.id, "executing")
         current_problem = store.get_problem(problem.id)
         if current_problem and current_problem.status in {"planned", "awaiting_approval"}:
             store.set_problem_status(problem.id, "running")
@@ -109,6 +179,9 @@ def execute_registered_step(
         started_clock = time.perf_counter()
 
         result = execute_workspace_tool(spec["tool_name"], arguments, root)
+        store.update_step_execution_receipt(
+            workspace.id, selected.id, "effect_applied", result=result,
+        )
         passed, criterion, evidence = verify_workspace_tool(
             spec["tool_name"], arguments, result, root
         )
@@ -129,6 +202,11 @@ def execute_registered_step(
             selected.id, spec["verification_criterion"] or criterion,
             "server-side workspace boundary and read-back check",
             passed, evidence,
+        )
+        store.update_step_execution_receipt(
+            workspace.id, selected.id, "verified" if passed else "failed",
+            result=result, evidence_reference=evidence,
+            error="" if passed else "Tool effect failed server-side verification.",
         )
         if not passed:
             current = store.get_problem(problem.id)
@@ -159,6 +237,16 @@ def execute_registered_step(
                 store.record_tool_run(
                     selected.id, spec["tool_name"], input_summary,
                     "Tool failed: " + type(exc).__name__, "failed", started_at, _timestamp(),
+                )
+            except Exception:
+                pass
+        current_receipt = store.get_step_execution_receipt(workspace.id, selected.id)
+        if current_receipt and current_receipt["status"] in {"prepared", "executing", "effect_applied"}:
+            try:
+                store.update_step_execution_receipt(
+                    workspace.id, selected.id,
+                    "failed" if selected.permission_level == "read_only" else "unknown",
+                    error=type(exc).__name__ + ": " + str(exc),
                 )
             except Exception:
                 pass
