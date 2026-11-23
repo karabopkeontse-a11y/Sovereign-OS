@@ -2041,13 +2041,18 @@ class TaskStore:
     def claim_mission_job(
         self, workspace_id: str, worker_id: str,
         lease_seconds: int = 60, mission_id: str | None = None,
+        payload_kind: str | None = None,
     ) -> dict | None:
-        """Atomically claim due work or reclaim a worker whose lease expired."""
+        """Atomically claim due work, optionally restricted to one payload kind."""
         worker_id = (worker_id or "").strip()
         if not worker_id:
             raise ValueError("worker_id is required")
         if not 10 <= int(lease_seconds) <= 3600:
             raise ValueError("lease_seconds must be between 10 and 3600")
+        if payload_kind is not None:
+            payload_kind = str(payload_kind).strip()
+            if not payload_kind or len(payload_kind) > 80:
+                raise ValueError("payload_kind must contain 1 to 80 characters")
         from datetime import timedelta
         now_dt = datetime.now(timezone.utc)
         now = now_dt.isoformat()
@@ -2088,6 +2093,9 @@ class TaskStore:
                   )
             """
             params = [workspace_id, now, now, now]
+            if payload_kind is not None:
+                sql += " AND json_extract(payload_json, '$.kind')=?"
+                params.append(payload_kind)
             if mission_id:
                 sql += " AND id=?"
                 params.append(mission_id)
