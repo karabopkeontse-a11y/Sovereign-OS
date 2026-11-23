@@ -143,6 +143,51 @@ class RegisteredAgentWorkerTests(unittest.TestCase):
         self.assertTrue(completed["result"]["replayed"])
         self.assertEqual(calls, ["workspace.create_note"])
 
+    def test_worker_chains_next_safe_registered_step_in_plan_order(self):
+        problem, first = self.create_step()
+        second = self.store.add_plan_step(
+            problem.id, 2, "List files again after the first step", "read_only"
+        )
+        self.store.add_step_spec(
+            second.id, "workspace.list_files", json.dumps({}),
+            "The second scoped file list is returned.",
+        )
+        first_job = self.create_job(problem, first)
+
+        self.worker().run_once()
+
+        saved_first = self.store.get_mission_job(self.workspace.id, first_job["id"])
+        saved_steps = self.store.list_steps(problem.id)
+        second_jobs = [
+            job for job in self.store.list_mission_jobs(self.workspace.id)
+            if job["payload"].get("step_id") == second.id
+        ]
+        self.assertEqual(saved_first["status"], "completed")
+        self.assertEqual([item.status for item in saved_steps], ["verified", "verified"])
+        self.assertEqual(len(second_jobs), 1)
+        self.assertEqual(second_jobs[0]["status"], "completed")
+        self.assertTrue(second_jobs[0]["result"]["verified"])
+
+    def test_worker_stops_automatic_chain_at_unapproved_step(self):
+        problem, first = self.create_step()
+        second = self.store.add_plan_step(
+            problem.id, 2, "Create a note after owner approval", "external_effect"
+        )
+        self.store.add_step_spec(
+            second.id, "workspace.create_note",
+            json.dumps({"filename": "approval-required.md", "content": "Wait for approval"}),
+            "The new note is read back and verified.",
+        )
+        first_job = self.create_job(problem, first)
+
+        self.worker().run_once()
+
+        saved_first = self.store.get_mission_job(self.workspace.id, first_job["id"])
+        self.assertEqual(saved_first["status"], "completed")
+        self.assertEqual(self.store.get_step(first.id).status, "verified")
+        self.assertEqual(self.store.get_step(second.id).status, "awaiting_approval")
+        self.assertEqual(len(self.store.list_mission_jobs(self.workspace.id)), 1)
+
     def test_unknown_payload_kind_is_terminal_and_never_executes_a_tool(self):
         job = self.store.create_mission_job(
             self.workspace.id, "Unsupported job", {"kind": "shell.execute"}
