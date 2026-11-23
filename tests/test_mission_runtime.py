@@ -20,25 +20,7 @@ class MissionRuntimeStoreTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def test_schema_v6_preserves_existing_plugin_and_collaboration_tables(self):
-        with closing(sqlite3.connect(self.db_path)) as db:
-            version = db.execute(
-                "SELECT MAX(version) FROM schema_migrations"
-            ).fetchone()[0]
-            tables = {
-                row[0] for row in db.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table'"
-                )
-            }
-        self.assertEqual(version, 6)
-        self.assertTrue({
-            "plugins", "workspace_metadata", "workspace_plugins",
-            "agent_discussions", "agent_collaboration_runs",
-            "agent_collaboration_checkpoints", "mission_jobs",
-            "mission_job_events",
-        }.issubset(tables))
-
-    def test_schema_v7_adds_durable_schedule_tables_without_replacing_queue(self):
+    def test_schema_v7_preserves_plugin_collaboration_and_mission_tables(self):
         with closing(sqlite3.connect(self.db_path)) as db:
             version = db.execute(
                 "SELECT MAX(version) FROM schema_migrations"
@@ -50,9 +32,11 @@ class MissionRuntimeStoreTests(unittest.TestCase):
             }
         self.assertEqual(version, 7)
         self.assertTrue({
-            "mission_jobs", "mission_job_events", "mission_schedules",
-            "mission_schedule_events", "plugins", "workspace_plugins",
-            "agent_collaboration_runs",
+            "plugins", "workspace_metadata", "workspace_plugins",
+            "agent_discussions", "agent_collaboration_runs",
+            "agent_collaboration_checkpoints", "mission_jobs",
+            "mission_job_events", "mission_schedules",
+            "mission_schedule_events",
         }.issubset(tables))
 
     def test_schedule_creation_is_idempotent_and_workspace_scoped(self):

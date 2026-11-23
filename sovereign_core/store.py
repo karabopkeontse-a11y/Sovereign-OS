@@ -1235,7 +1235,7 @@ class TaskStore:
         except (TypeError, ValueError) as exc:
             raise ValueError("run_at must be a valid timezone-aware timestamp") from exc
         if parsed.tzinfo is None or parsed.utcoffset() is None:
-            raise ValueError("run_at must include an explicit UTC offset")
+            raise ValueError("run_at must be timezone-aware and include an explicit UTC offset")
         if parsed.astimezone(zone).utcoffset() != parsed.utcoffset():
             raise ValueError("run_at offset does not match timezone_name")
         due = parsed.astimezone(timezone.utc).isoformat()

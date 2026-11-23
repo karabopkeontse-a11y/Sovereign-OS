@@ -11,7 +11,7 @@ Each capability must have a real user outcome, permission model, online/offline 
 | Measure | Count |
 |---|---:|
 | Verified / released | 10 |
-| In testing | 0 |
+| In testing | 3 |
 | Planned | 0 |
 | Minimum product target | 200 |
 
