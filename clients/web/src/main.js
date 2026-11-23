@@ -218,7 +218,11 @@ async function runSpecialistGroup(){
    const run=snapshot.run;
    status.textContent="Mission "+runId.slice(0,8)+" · "+(run.current_stage||run.status).replaceAll("_"," ")+" · attempt "+(run.attempts||0);
    if(run.status==="completed")break;
-   if(["retryable","failed","cancelled"].includes(run.status)){
+   if(run.status==="cancelled"){
+    status.textContent="Mission was cancelled. Its saved checkpoints remain available for review.";
+    return;
+   }
+   if(["retryable","failed"].includes(run.status)){
     status.textContent="Mission paused ("+run.status+"). Completed checkpoints are saved. "+(run.last_error||"You can safely retry the unfinished stages.");
     const retry=document.createElement("button");retry.type="button";retry.className="primary";retry.textContent="Resume unfinished stages";
     retry.onclick=async()=>{retry.disabled=true;try{await api("/api/v1/workspaces/"+encodeURIComponent(active)+"/agent-collaboration-runs/"+encodeURIComponent(runId)+"/retry",{method:"POST",body:"{}"});status.textContent="Resuming from the last completed checkpoint...";await wait(1200);button.click();}catch(error){status.textContent="Retry could not be queued: "+error.message;retry.disabled=false;}};
