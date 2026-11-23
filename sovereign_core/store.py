@@ -83,6 +83,26 @@ class TaskStore:
                     created_at TEXT NOT NULL,
                     FOREIGN KEY(step_id) REFERENCES plan_steps(id)
                 );
+                CREATE TABLE IF NOT EXISTS agent_execution_receipts (
+                    id TEXT PRIMARY KEY,
+                    workspace_id TEXT NOT NULL,
+                    problem_id TEXT NOT NULL,
+                    step_id TEXT NOT NULL UNIQUE,
+                    tool_name TEXT NOT NULL,
+                    input_json TEXT NOT NULL,
+                    input_sha256 TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    result_json TEXT,
+                    evidence_reference TEXT NOT NULL DEFAULT '',
+                    error TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+                    FOREIGN KEY(problem_id) REFERENCES problems(id),
+                    FOREIGN KEY(step_id) REFERENCES plan_steps(id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_agent_execution_receipts_workspace
+                    ON agent_execution_receipts(workspace_id, created_at);
                 CREATE TABLE IF NOT EXISTS memory_records (
                     id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, kind TEXT NOT NULL,
                     content TEXT NOT NULL, source TEXT NOT NULL, confidence REAL NOT NULL,
@@ -2317,6 +2337,104 @@ class TaskStore:
         with self._connection() as db:
             rows = db.execute("SELECT * FROM plan_steps WHERE problem_id=? ORDER BY step_number", (problem_id,)).fetchall()
         return [PlanStep(**dict(row)) for row in rows]
+
+    def claim_step_execution(self, workspace_id: str, problem_id: str,
+                             step_id: str, tool_name: str, input_json: str,
+                             expected_status: str) -> dict | None:
+        """Atomically claim a ready step and persist its execution intent."""
+        import hashlib
+        import json
+        if expected_status not in {"planned", "approved"}:
+            raise ValueError("Only planned or approved steps can be claimed")
+        try:
+            parsed = json.loads(input_json)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise ValueError("Execution receipt input must be valid JSON") from exc
+        if not isinstance(parsed, dict):
+            raise ValueError("Execution receipt input must be a JSON object")
+        input_sha256 = hashlib.sha256(
+            json.dumps(parsed, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        ).hexdigest()
+        now = _now()
+        with self._connection() as db:
+            row = db.execute(
+                """SELECT p.workspace_id, s.problem_id FROM plan_steps s
+                   JOIN problems p ON p.id=s.problem_id WHERE s.id=?""",
+                (step_id,),
+            ).fetchone()
+            if not row or row["workspace_id"] != workspace_id or row["problem_id"] != problem_id:
+                raise ValueError("Step does not belong to this workspace task")
+            cursor = db.execute(
+                "UPDATE plan_steps SET status='running' WHERE id=? AND problem_id=? AND status=?",
+                (step_id, problem_id, expected_status),
+            )
+            if cursor.rowcount != 1:
+                return None
+            receipt = {
+                "id": str(uuid4()), "workspace_id": workspace_id,
+                "problem_id": problem_id, "step_id": step_id,
+                "tool_name": tool_name, "input_json": input_json,
+                "input_sha256": input_sha256, "status": "prepared",
+                "result_json": None, "evidence_reference": "", "error": "",
+                "created_at": now, "updated_at": now,
+            }
+            db.execute(
+                """INSERT INTO agent_execution_receipts
+                   (id, workspace_id, problem_id, step_id, tool_name, input_json,
+                    input_sha256, status, result_json, evidence_reference, error,
+                    created_at, updated_at)
+                   VALUES (:id, :workspace_id, :problem_id, :step_id, :tool_name,
+                    :input_json, :input_sha256, :status, :result_json,
+                    :evidence_reference, :error, :created_at, :updated_at)""",
+                receipt,
+            )
+            return receipt
+
+    def get_step_execution_receipt(self, workspace_id: str, step_id: str) -> dict | None:
+        with self._connection() as db:
+            row = db.execute(
+                "SELECT * FROM agent_execution_receipts WHERE workspace_id=? AND step_id=?",
+                (workspace_id, step_id),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def update_step_execution_receipt(self, workspace_id: str, step_id: str,
+                                      status: str, *, result: dict | None = None,
+                                      evidence_reference: str | None = None,
+                                      error: str | None = None) -> dict:
+        import json
+        allowed = {
+            "prepared": {"executing", "failed", "unknown"},
+            "executing": {"effect_applied", "verified", "failed", "unknown"},
+            "effect_applied": {"verified", "failed", "unknown"},
+            "unknown": {"verified", "failed"},
+            "verified": set(), "failed": set(),
+        }
+        with self._connection() as db:
+            row = db.execute(
+                "SELECT * FROM agent_execution_receipts WHERE workspace_id=? AND step_id=?",
+                (workspace_id, step_id),
+            ).fetchone()
+            if not row:
+                raise ValueError("Execution receipt does not exist")
+            if status not in allowed.get(row["status"], set()):
+                if status == row["status"]:
+                    return dict(row)
+                raise ValueError(f"Invalid execution receipt transition: {row['status']} -> {status}")
+            result_json = json.dumps(result, ensure_ascii=False) if result is not None else row["result_json"]
+            db.execute(
+                """UPDATE agent_execution_receipts SET status=?, result_json=?,
+                   evidence_reference=?, error=?, updated_at=?
+                   WHERE workspace_id=? AND step_id=?""",
+                (status, result_json,
+                 row["evidence_reference"] if evidence_reference is None else evidence_reference,
+                 row["error"] if error is None else str(error)[:2000], _now(), workspace_id, step_id),
+            )
+            updated = db.execute(
+                "SELECT * FROM agent_execution_receipts WHERE workspace_id=? AND step_id=?",
+                (workspace_id, step_id),
+            ).fetchone()
+            return dict(updated)
 
     def claim_plan_step(self, step_id: str,
                         expected_statuses: tuple[str, ...] = ("planned", "approved")) -> bool:
