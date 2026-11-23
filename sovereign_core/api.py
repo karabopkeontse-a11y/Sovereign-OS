@@ -1360,9 +1360,16 @@ def create_app(
         problem = tasks.get_problem(problem_id)
         if not problem or problem.workspace_id != workspace.id:
             raise HTTPException(404, "Task not found in this workspace")
-        step = next((item for item in tasks.list_steps(problem.id) if item.id == step_id), None)
-        if step is None:
+        ordered_steps = tasks.list_steps(problem.id)
+        step_index = next(
+            (index for index, item in enumerate(ordered_steps) if item.id == step_id),
+            None,
+        )
+        if step_index is None:
             raise HTTPException(404, "Plan step not found in this task")
+        step = ordered_steps[step_index]
+        if any(item.status != "verified" for item in ordered_steps[:step_index]):
+            raise HTTPException(409, "Earlier plan steps must be verified before this step can be queued.")
         if problem.status in {"blocked", "failed", "completed", "cancelled"}:
             raise HTTPException(409, "This task is closed to further execution.")
         if step.status not in {"planned", "approved"}:
