@@ -128,6 +128,9 @@ class MissionWorkerSupervisorTests(unittest.TestCase):
             time.sleep(0.08)
             observed["heartbeat"] = context.heartbeat_event.is_set()
             observed["lease_lost"] = context.lease_lost
+            observed["heartbeat_at"] = self.store.get_mission_job(
+                self.workspace.id, _job["id"]
+            )["heartbeat_at"]
             return {"ok": True}
 
         worker = MissionWorkerSupervisor(
@@ -139,7 +142,9 @@ class MissionWorkerSupervisorTests(unittest.TestCase):
         saved = self.store.get_mission_job(self.workspace.id, job["id"])
         self.assertTrue(observed["heartbeat"])
         self.assertFalse(observed["lease_lost"])
-        self.assertTrue(saved["heartbeat_at"])
+        self.assertTrue(observed["heartbeat_at"])
+        # Terminal transitions clear the active heartbeat and lease.
+        self.assertIsNone(saved["heartbeat_at"])
         self.assertEqual(saved["status"], "completed")
 
     def test_shutdown_stops_claiming_after_current_executor_returns(self):
