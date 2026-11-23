@@ -90,7 +90,7 @@ class RegisteredAgentExecutionServiceTests(unittest.TestCase):
             self.store, self.db_path, self.workspace.id, problem.id, step.id
         )
         self.assertTrue(replay["replayed"])
-        self.assertEqual(target.read_text(encoding="utf-8"), "# Approved\\nPersisted safely.")
+        self.assertEqual(target.read_text(encoding="utf-8"), "# Approved\nPersisted safely.")
         approvals = self.store.list_approval_events(self.workspace.id, problem.id)
         self.assertEqual([event["decision"] for event in approvals], ["approved"])
 
