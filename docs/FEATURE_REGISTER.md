@@ -10,8 +10,8 @@ Each capability must have a real user outcome, permission model, online/offline 
 
 | Measure | Count |
 |---|---:|
-| Verified / released | 10 |
-| In testing | 3 |
+| Verified / released | 13 |
+| In testing | 0 |
 | Planned | 0 |
 | Minimum product target | 200 |
 
@@ -36,9 +36,9 @@ Ten mission-runtime capabilities are now counted as verified based on the user's
 
 | Stable ID | Capability | User outcome | Permissions | Connectivity | Dependencies | Verification / tests | Status |
 |---|---|---|---|---|---|---|---|
-| SCHED-001 | Durable one-time schedule definitions | Save a future mission schedule that survives application restarts | Workspace-scoped mission scheduling permission | Offline-capable | SQLite schedule store | Migration, persistence, workspace isolation, idempotent create | TESTING |
-| SCHED-002 | Timezone-aware one-time scheduling | Schedule a mission using an explicit IANA timezone and UTC offset | Workspace-scoped mission scheduling permission | Offline-capable | SCHED-001; Python zoneinfo and tzdata | Reject naive, unknown, or mismatched timezone inputs; normalize due time to UTC | TESTING |
-| SCHED-003 | Idempotent due-schedule promotion | Convert each due schedule into exactly one existing queue job | Workspace-scoped scheduler/queue permission | Offline-capable | SCHED-001; mission queue | Due gating, atomic concurrent promotion, queue linkage, audit events | TESTING |
+| SCHED-001 | Durable one-time schedule definitions | Save a future mission schedule that survives application restarts | Workspace-scoped mission scheduling permission | Offline-capable | SQLite schedule store | Migration, persistence, workspace isolation, idempotent create | VERIFIED |
+| SCHED-002 | Timezone-aware one-time scheduling | Schedule a mission using an explicit IANA timezone and UTC offset | Workspace-scoped mission scheduling permission | Offline-capable | SCHED-001; Python zoneinfo and tzdata | Reject naive, unknown, or mismatched timezone inputs; normalize due time to UTC | VERIFIED |
+| SCHED-003 | Idempotent due-schedule promotion | Convert each due schedule into exactly one existing queue job | Workspace-scoped scheduler/queue permission | Offline-capable | SCHED-001; mission queue | Due gating, atomic concurrent promotion, queue linkage, audit events | VERIFIED |
 
 ## Backlog policy
 
