@@ -91,6 +91,9 @@ class TaskStore:
                 );
             """)
             self._migrate_plugin_registry(db)
+            self._migrate_agent_collaboration(db)
+            self._migrate_agent_assignments(db)
+            self._migrate_agent_collaboration_recovery(db)
 
     def _migrate_plugin_registry(self, db) -> None:
         """Add the versioned plugin registry without rewriting existing records."""
@@ -206,6 +209,736 @@ class TaskStore:
                 INSERT INTO schema_migrations(version, name, applied_at)
                 VALUES (1, 'plugin_registry_foundation', ?)
             """, (now,))
+
+    def _migrate_agent_collaboration(self, db) -> None:
+        """Add persistent, workspace-isolated agent identities and discussions."""
+        db.executescript("""
+            CREATE TABLE IF NOT EXISTS agent_identities (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                name TEXT NOT NULL,
+                mission TEXT NOT NULL DEFAULT '',
+                provider TEXT NOT NULL DEFAULT '',
+                model TEXT NOT NULL DEFAULT '',
+                runtime TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(id, workspace_id),
+                UNIQUE(workspace_id, role, name),
+                FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_agent_identities_workspace
+                ON agent_identities(workspace_id, role, name);
+
+            CREATE TABLE IF NOT EXISTS agent_discussions (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'open'
+                    CHECK(status IN ('open','completed','cancelled')),
+                leader_agent_id TEXT,
+                conversation_id TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(id, workspace_id),
+                FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+                FOREIGN KEY(leader_agent_id, workspace_id)
+                    REFERENCES agent_identities(id, workspace_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_agent_discussions_workspace
+                ON agent_discussions(workspace_id, updated_at);
+
+            CREATE TABLE IF NOT EXISTS agent_messages (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                discussion_id TEXT NOT NULL,
+                agent_id TEXT,
+                speaker_type TEXT NOT NULL
+                    CHECK(speaker_type IN ('user','agent','leader','system')),
+                sequence INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(discussion_id, sequence),
+                FOREIGN KEY(discussion_id, workspace_id)
+                    REFERENCES agent_discussions(id, workspace_id),
+                FOREIGN KEY(agent_id, workspace_id)
+                    REFERENCES agent_identities(id, workspace_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_agent_messages_discussion
+                ON agent_messages(workspace_id, discussion_id, sequence);
+        """)
+
+        version = db.execute(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations"
+        ).fetchone()[0]
+        if version < 2:
+            db.execute("""
+                INSERT INTO schema_migrations(version, name, applied_at)
+                VALUES (2, 'workspace_scoped_agent_collaboration', ?)
+            """, (_now(),))
+
+    def _migrate_agent_assignments(self, db) -> None:
+        """Add persistent, workspace-isolated agent task assignments."""
+        db.executescript("""
+            CREATE TABLE IF NOT EXISTS agent_assignments (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                discussion_id TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                task TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'assigned'
+                    CHECK(status IN (
+                        'assigned','in_progress','completed','blocked','failed'
+                    )),
+                result TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(discussion_id, workspace_id)
+                    REFERENCES agent_discussions(id, workspace_id),
+                FOREIGN KEY(agent_id, workspace_id)
+                    REFERENCES agent_identities(id, workspace_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_agent_assignments_discussion
+                ON agent_assignments(workspace_id, discussion_id, created_at);
+
+            CREATE INDEX IF NOT EXISTS idx_agent_assignments_agent
+                ON agent_assignments(workspace_id, agent_id, status);
+        """)
+
+        version = db.execute(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations"
+        ).fetchone()[0]
+        if version < 3:
+            db.execute("""
+                INSERT INTO schema_migrations(version, name, applied_at)
+                VALUES (3, 'workspace_scoped_agent_assignments', ?)
+            """, (_now(),))
+
+
+    def _migrate_agent_collaboration_recovery(self, db) -> None:
+        """Persist collaboration runs and per-agent stage checkpoints (schema v4)."""
+        db.executescript("""
+            CREATE TABLE IF NOT EXISTS agent_collaboration_runs (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                discussion_id TEXT NOT NULL,
+                task TEXT NOT NULL,
+                conversation_id TEXT,
+                memory_context TEXT NOT NULL DEFAULT '',
+                specialist_ids_json TEXT NOT NULL DEFAULT '[]',
+                max_agents INTEGER NOT NULL DEFAULT 4 CHECK(max_agents BETWEEN 1 AND 4),
+                status TEXT NOT NULL DEFAULT 'queued'
+                    CHECK(status IN ('queued','running','retryable','completed','failed','cancelled')),
+                current_stage TEXT NOT NULL DEFAULT 'queued',
+                attempts INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(id, workspace_id),
+                FOREIGN KEY(discussion_id, workspace_id)
+                    REFERENCES agent_discussions(id, workspace_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_agent_collaboration_runs_workspace
+                ON agent_collaboration_runs(workspace_id, updated_at);
+
+            CREATE INDEX IF NOT EXISTS idx_agent_collaboration_runs_status
+                ON agent_collaboration_runs(status, updated_at);
+
+            CREATE TABLE IF NOT EXISTS agent_collaboration_checkpoints (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
+                discussion_id TEXT NOT NULL,
+                stage TEXT NOT NULL
+                    CHECK(stage IN ('proposals','reviews','responses','leader_synthesis')),
+                agent_id TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK(status IN ('pending','in_progress','completed','failed')),
+                result TEXT NOT NULL DEFAULT '',
+                provider TEXT NOT NULL DEFAULT '',
+                model TEXT NOT NULL DEFAULT '',
+                attempts INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT NOT NULL DEFAULT '',
+                message_id TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(run_id, stage, agent_id),
+                FOREIGN KEY(run_id, workspace_id)
+                    REFERENCES agent_collaboration_runs(id, workspace_id),
+                FOREIGN KEY(discussion_id, workspace_id)
+                    REFERENCES agent_discussions(id, workspace_id),
+                FOREIGN KEY(agent_id, workspace_id)
+                    REFERENCES agent_identities(id, workspace_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_agent_collaboration_checkpoints_run
+                ON agent_collaboration_checkpoints(workspace_id, run_id, stage);
+        """)
+
+        version = db.execute(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations"
+        ).fetchone()[0]
+        if version < 4:
+            db.execute("""
+                INSERT INTO schema_migrations(version, name, applied_at)
+                VALUES (4, 'durable_agent_collaboration_recovery', ?)
+            """, (_now(),))
+
+    def create_agent_collaboration_run(
+        self, workspace_id: str, discussion_id: str, task: str,
+        conversation_id: str | None = None, memory_context: str = "",
+        specialist_ids: list[str] | None = None, max_agents: int = 4
+    ) -> dict:
+        import json
+
+        task = (task or "").strip()
+        if not task:
+            raise ValueError("Collaboration task is required")
+        if not 1 <= int(max_agents) <= 4:
+            raise ValueError("max_agents must be between 1 and 4")
+        now, run_id = _now(), str(uuid4())
+        with self._connection() as db:
+            discussion = db.execute("""
+                SELECT id, status, conversation_id FROM agent_discussions
+                WHERE id=? AND workspace_id=?
+            """, (discussion_id, workspace_id)).fetchone()
+            if not discussion:
+                raise ValueError("Discussion not found in workspace")
+            if discussion["status"] != "open":
+                raise ValueError("Discussion is not open")
+            if conversation_id and discussion["conversation_id"] not in (None, conversation_id):
+                raise ValueError("Conversation does not match the discussion")
+            db.execute("""
+                INSERT INTO agent_collaboration_runs (
+                    id, workspace_id, discussion_id, task, conversation_id,
+                    memory_context, specialist_ids_json, max_agents, status,
+                    current_stage, attempts, last_error, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', 'queued', 0, '', ?, ?)
+            """, (
+                run_id, workspace_id, discussion_id, task, conversation_id,
+                memory_context or "", json.dumps(specialist_ids or []),
+                int(max_agents), now, now
+            ))
+            row = db.execute("""
+                SELECT * FROM agent_collaboration_runs
+                WHERE id=? AND workspace_id=?
+            """, (run_id, workspace_id)).fetchone()
+            return dict(row)
+
+    def get_agent_collaboration_run(
+        self, workspace_id: str, run_id: str
+    ) -> dict | None:
+        import json
+
+        with self._connection() as db:
+            row = db.execute("""
+                SELECT * FROM agent_collaboration_runs
+                WHERE id=? AND workspace_id=?
+            """, (run_id, workspace_id)).fetchone()
+        if not row:
+            return None
+        result = dict(row)
+        result["specialist_ids"] = json.loads(result.pop("specialist_ids_json"))
+        return result
+
+    def list_agent_collaboration_runs(
+        self, workspace_id: str, limit: int = 50
+    ) -> list[dict]:
+        import json
+
+        with self._connection() as db:
+            rows = db.execute("""
+                SELECT * FROM agent_collaboration_runs
+                WHERE workspace_id=? ORDER BY updated_at DESC LIMIT ?
+            """, (workspace_id, max(1, min(int(limit), 200)))).fetchall()
+        results = []
+        for row in rows:
+            item = dict(row)
+            item["specialist_ids"] = json.loads(item.pop("specialist_ids_json"))
+            results.append(item)
+        return results
+
+    def update_agent_collaboration_run(
+        self, workspace_id: str, run_id: str, status: str | None = None,
+        current_stage: str | None = None, last_error: str | None = None,
+        increment_attempts: bool = False
+    ) -> dict:
+        allowed = {"queued", "running", "retryable", "completed", "failed", "cancelled"}
+        if status is not None and status not in allowed:
+            raise ValueError("Invalid collaboration run status")
+        with self._connection() as db:
+            row = db.execute("""
+                SELECT * FROM agent_collaboration_runs
+                WHERE id=? AND workspace_id=?
+            """, (run_id, workspace_id)).fetchone()
+            if not row:
+                raise ValueError("Collaboration run not found in workspace")
+            if row["status"] in {"completed", "cancelled"} and status not in (None, row["status"]):
+                raise ValueError(f"Cannot change terminal run status: {row['status']}")
+            db.execute("""
+                UPDATE agent_collaboration_runs
+                SET status=COALESCE(?, status),
+                    current_stage=COALESCE(?, current_stage),
+                    last_error=COALESCE(?, last_error),
+                    attempts=attempts + ?,
+                    updated_at=?
+                WHERE id=? AND workspace_id=?
+            """, (
+                status, current_stage, last_error,
+                1 if increment_attempts else 0, _now(), run_id, workspace_id
+            ))
+            updated = db.execute("""
+                SELECT * FROM agent_collaboration_runs
+                WHERE id=? AND workspace_id=?
+            """, (run_id, workspace_id)).fetchone()
+            result = dict(updated)
+            import json
+            result["specialist_ids"] = json.loads(result.pop("specialist_ids_json"))
+            return result
+
+    def create_agent_collaboration_checkpoint(
+        self, workspace_id: str, run_id: str, discussion_id: str,
+        stage: str, agent_id: str
+    ) -> dict:
+        stages = {"proposals", "reviews", "responses", "leader_synthesis"}
+        if stage not in stages:
+            raise ValueError("Invalid collaboration checkpoint stage")
+        now, checkpoint_id = _now(), str(uuid4())
+        with self._connection() as db:
+            run = db.execute("""
+                SELECT discussion_id FROM agent_collaboration_runs
+                WHERE id=? AND workspace_id=?
+            """, (run_id, workspace_id)).fetchone()
+            if not run or run["discussion_id"] != discussion_id:
+                raise ValueError("Collaboration run not found in workspace")
+            db.execute("""
+                INSERT OR IGNORE INTO agent_collaboration_checkpoints (
+                    id, run_id, workspace_id, discussion_id, stage, agent_id,
+                    status, result, provider, model, attempts, last_error,
+                    message_id, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 'pending', '', '', '', 0, '', NULL, ?, ?)
+            """, (
+                checkpoint_id, run_id, workspace_id, discussion_id,
+                stage, agent_id, now, now
+            ))
+            row = db.execute("""
+                SELECT * FROM agent_collaboration_checkpoints
+                WHERE run_id=? AND stage=? AND agent_id=? AND workspace_id=?
+            """, (run_id, stage, agent_id, workspace_id)).fetchone()
+            return dict(row)
+
+    def list_agent_collaboration_checkpoints(
+        self, workspace_id: str, run_id: str
+    ) -> list[dict]:
+        with self._connection() as db:
+            if not db.execute("""
+                SELECT 1 FROM agent_collaboration_runs
+                WHERE id=? AND workspace_id=?
+            """, (run_id, workspace_id)).fetchone():
+                raise ValueError("Collaboration run not found in workspace")
+            rows = db.execute("""
+                SELECT * FROM agent_collaboration_checkpoints
+                WHERE run_id=? AND workspace_id=?
+                ORDER BY CASE stage
+                    WHEN 'proposals' THEN 1 WHEN 'reviews' THEN 2
+                    WHEN 'responses' THEN 3 ELSE 4 END, created_at, id
+            """, (run_id, workspace_id)).fetchall()
+            return [dict(row) for row in rows]
+
+    def update_agent_collaboration_checkpoint(
+        self, workspace_id: str, checkpoint_id: str, status: str,
+        result: str | None = None, provider: str | None = None,
+        model: str | None = None, last_error: str | None = None,
+        increment_attempts: bool = False
+    ) -> dict:
+        if status not in {"pending", "in_progress", "completed", "failed"}:
+            raise ValueError("Invalid collaboration checkpoint status")
+        with self._connection() as db:
+            row = db.execute("""
+                SELECT * FROM agent_collaboration_checkpoints
+                WHERE id=? AND workspace_id=?
+            """, (checkpoint_id, workspace_id)).fetchone()
+            if not row:
+                raise ValueError("Collaboration checkpoint not found in workspace")
+            if row["status"] == "completed" and status != "completed":
+                raise ValueError("Completed checkpoints cannot be reset")
+            db.execute("""
+                UPDATE agent_collaboration_checkpoints
+                SET status=?, result=COALESCE(?, result),
+                    provider=COALESCE(?, provider), model=COALESCE(?, model),
+                    last_error=COALESCE(?, last_error),
+                    attempts=attempts + ?, updated_at=?
+                WHERE id=? AND workspace_id=?
+            """, (
+                status, result, provider, model, last_error,
+                1 if increment_attempts else 0, _now(), checkpoint_id, workspace_id
+            ))
+            updated = db.execute("""
+                SELECT * FROM agent_collaboration_checkpoints
+                WHERE id=? AND workspace_id=?
+            """, (checkpoint_id, workspace_id)).fetchone()
+            return dict(updated)
+
+    def complete_agent_collaboration_checkpoint(
+        self, workspace_id: str, checkpoint_id: str, result: str,
+        speaker_type: str, agent_id: str, provider: str = "", model: str = ""
+    ) -> dict:
+        """Atomically persist a completed stage result and its discussion message."""
+        if speaker_type not in {"agent", "leader"}:
+            raise ValueError("Checkpoint messages must be agent or leader messages")
+        if not (result or "").strip():
+            raise ValueError("Checkpoint result is required")
+        now = _now()
+        with self._connection() as db:
+            checkpoint = db.execute("""
+                SELECT * FROM agent_collaboration_checkpoints
+                WHERE id=? AND workspace_id=?
+            """, (checkpoint_id, workspace_id)).fetchone()
+            if not checkpoint:
+                raise ValueError("Collaboration checkpoint not found in workspace")
+            if checkpoint["agent_id"] != agent_id:
+                raise ValueError("Checkpoint agent does not match")
+            if checkpoint["status"] == "completed":
+                existing = db.execute("""
+                    SELECT * FROM agent_messages
+                    WHERE id=? AND workspace_id=?
+                """, (checkpoint["message_id"], workspace_id)).fetchone()
+                return {
+                    "checkpoint": dict(checkpoint),
+                    "message": dict(existing) if existing else None,
+                    "already_completed": True,
+                }
+            sequence = db.execute("""
+                SELECT COALESCE(MAX(sequence), 0) + 1 FROM agent_messages
+                WHERE workspace_id=? AND discussion_id=?
+            """, (workspace_id, checkpoint["discussion_id"])).fetchone()[0]
+            message_id = str(uuid4())
+            db.execute("""
+                INSERT INTO agent_messages
+                (id, workspace_id, discussion_id, agent_id, speaker_type,
+                 sequence, content, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                message_id, workspace_id, checkpoint["discussion_id"],
+                agent_id, speaker_type, sequence, result.strip(), now
+            ))
+            db.execute("""
+                UPDATE agent_discussions SET updated_at=?
+                WHERE id=? AND workspace_id=?
+            """, (now, checkpoint["discussion_id"], workspace_id))
+            db.execute("""
+                UPDATE agent_collaboration_checkpoints
+                SET status='completed', result=?, provider=?, model=?,
+                    message_id=?, last_error='', updated_at=?
+                WHERE id=? AND workspace_id=?
+            """, (
+                result.strip(), provider or "", model or "", message_id,
+                now, checkpoint_id, workspace_id
+            ))
+            updated = db.execute("""
+                SELECT * FROM agent_collaboration_checkpoints
+                WHERE id=? AND workspace_id=?
+            """, (checkpoint_id, workspace_id)).fetchone()
+            message = db.execute("""
+                SELECT * FROM agent_messages WHERE id=? AND workspace_id=?
+            """, (message_id, workspace_id)).fetchone()
+            return {
+                "checkpoint": dict(updated),
+                "message": dict(message),
+                "already_completed": False,
+            }
+
+    def create_agent_assignment(
+        self, workspace_id: str, discussion_id: str,
+        agent_id: str, task: str
+    ) -> dict:
+        task = task.strip()
+        if not task:
+            raise ValueError("Assignment task is required")
+
+        with self._connection() as db:
+            discussion = db.execute("""
+                SELECT status FROM agent_discussions
+                WHERE id = ? AND workspace_id = ?
+            """, (discussion_id, workspace_id)).fetchone()
+            if not discussion:
+                raise ValueError("Discussion not found in workspace")
+            if discussion["status"] != "open":
+                raise ValueError("Discussion is not open")
+
+            agent = db.execute("""
+                SELECT id FROM agent_identities
+                WHERE id = ? AND workspace_id = ?
+            """, (agent_id, workspace_id)).fetchone()
+            if not agent:
+                raise ValueError("Agent not found in workspace")
+
+            now, assignment_id = _now(), str(uuid4())
+            db.execute("""
+                INSERT INTO agent_assignments (
+                    id, workspace_id, discussion_id, agent_id,
+                    task, status, result, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, 'assigned', '', ?, ?)
+            """, (
+                assignment_id, workspace_id, discussion_id,
+                agent_id, task, now, now
+            ))
+            row = db.execute("""
+                SELECT * FROM agent_assignments
+                WHERE id = ? AND workspace_id = ?
+            """, (assignment_id, workspace_id)).fetchone()
+            return dict(row)
+
+    def update_agent_assignment(
+        self, workspace_id: str, assignment_id: str,
+        status: str, result: str = ""
+    ) -> dict:
+        transitions = {
+            "assigned": {"in_progress", "blocked", "failed"},
+            "in_progress": {"completed", "blocked", "failed"},
+            "blocked": {"in_progress", "failed"},
+            "failed": {"in_progress"},
+            "completed": set(),
+        }
+        if status not in transitions:
+            raise ValueError("Invalid assignment status")
+
+        with self._connection() as db:
+            row = db.execute("""
+                SELECT * FROM agent_assignments
+                WHERE id = ? AND workspace_id = ?
+            """, (assignment_id, workspace_id)).fetchone()
+            if not row:
+                raise ValueError("Assignment not found in workspace")
+
+            current = row["status"]
+            if status != current and status not in transitions[current]:
+                raise ValueError(
+                    f"Invalid assignment transition: {current} -> {status}"
+                )
+
+            db.execute("""
+                UPDATE agent_assignments
+                SET status = ?, result = ?, updated_at = ?
+                WHERE id = ? AND workspace_id = ?
+            """, (
+                status, result, _now(), assignment_id, workspace_id
+            ))
+            updated = db.execute("""
+                SELECT * FROM agent_assignments
+                WHERE id = ? AND workspace_id = ?
+            """, (assignment_id, workspace_id)).fetchone()
+            return dict(updated)
+
+    def list_agent_assignments(
+        self, workspace_id: str, discussion_id: str
+    ) -> list[dict]:
+        with self._connection() as db:
+            discussion = db.execute("""
+                SELECT id FROM agent_discussions
+                WHERE id = ? AND workspace_id = ?
+            """, (discussion_id, workspace_id)).fetchone()
+            if not discussion:
+                raise ValueError("Discussion not found in workspace")
+
+            rows = db.execute("""
+                SELECT * FROM agent_assignments
+                WHERE workspace_id = ? AND discussion_id = ?
+                ORDER BY created_at, id
+            """, (workspace_id, discussion_id)).fetchall()
+            return [dict(row) for row in rows]
+
+    def create_agent_identity(
+        self, workspace_id: str, role: str, name: str, mission: str = "",
+        provider: str = "", model: str = "", runtime: str = ""
+    ) -> dict:
+        if not self.get_workspace(workspace_id):
+            raise ValueError("Workspace not found")
+        role, name = role.strip(), name.strip()
+        if not role or not name:
+            raise ValueError("Agent role and name are required")
+        now, identity_id = _now(), str(uuid4())
+        with self._connection() as db:
+            db.execute("""
+                INSERT INTO agent_identities
+                (id, workspace_id, role, name, mission, provider, model,
+                 runtime, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (identity_id, workspace_id, role, name, mission.strip(),
+                  provider.strip(), model.strip(), runtime.strip(), now, now))
+            row = db.execute(
+                "SELECT * FROM agent_identities WHERE id=? AND workspace_id=?",
+                (identity_id, workspace_id)
+            ).fetchone()
+            return dict(row)
+
+    def get_agent_identity(self, workspace_id: str, agent_id: str) -> dict | None:
+        with self._connection() as db:
+            row = db.execute("""
+                SELECT * FROM agent_identities
+                WHERE id=? AND workspace_id=?
+            """, (agent_id, workspace_id)).fetchone()
+            return dict(row) if row else None
+
+    def list_agent_identities(self, workspace_id: str) -> list[dict]:
+        with self._connection() as db:
+            rows = db.execute("""
+                SELECT * FROM agent_identities
+                WHERE workspace_id=? ORDER BY role, name
+            """, (workspace_id,)).fetchall()
+            return [dict(row) for row in rows]
+
+    def create_agent_discussion(
+        self, workspace_id: str, title: str,
+        leader_agent_id: str | None = None,
+        conversation_id: str | None = None
+    ) -> dict:
+        if not self.get_workspace(workspace_id):
+            raise ValueError("Workspace not found")
+        title = title.strip()
+        if not title:
+            raise ValueError("Discussion title is required")
+        if leader_agent_id and not self.get_agent_identity(workspace_id, leader_agent_id):
+            raise ValueError("Leader agent does not belong to this workspace")
+        now, discussion_id = _now(), str(uuid4())
+        with self._connection() as db:
+            db.execute("""
+                INSERT INTO agent_discussions
+                (id, workspace_id, title, leader_agent_id, conversation_id,
+                 created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (discussion_id, workspace_id, title, leader_agent_id,
+                  conversation_id, now, now))
+            row = db.execute("""
+                SELECT * FROM agent_discussions
+                WHERE id=? AND workspace_id=?
+            """, (discussion_id, workspace_id)).fetchone()
+            return dict(row)
+
+    def get_agent_discussion(
+        self, workspace_id: str, discussion_id: str
+    ) -> dict | None:
+        with self._connection() as db:
+            row = db.execute("""
+                SELECT * FROM agent_discussions
+                WHERE id=? AND workspace_id=?
+            """, (discussion_id, workspace_id)).fetchone()
+            return dict(row) if row else None
+
+    def list_agent_discussions(self, workspace_id: str) -> list[dict]:
+        with self._connection() as db:
+            rows = db.execute("""
+                SELECT * FROM agent_discussions
+                WHERE workspace_id=? ORDER BY updated_at DESC
+            """, (workspace_id,)).fetchall()
+            return [dict(row) for row in rows]
+
+    def set_agent_discussion_status(
+        self, workspace_id: str, discussion_id: str, status: str
+    ) -> dict:
+        if status not in ("completed", "cancelled"):
+            raise ValueError("Discussion status must be completed or cancelled")
+
+        with self._connection() as db:
+            discussion = db.execute("""
+                SELECT * FROM agent_discussions
+                WHERE id = ? AND workspace_id = ?
+            """, (discussion_id, workspace_id)).fetchone()
+            if not discussion:
+                raise ValueError("Discussion not found in workspace")
+            if discussion["status"] != "open":
+                raise ValueError("Only open discussions can change status")
+
+            if status == "completed":
+                unfinished = db.execute("""
+                    SELECT COUNT(*) AS total FROM agent_assignments
+                    WHERE workspace_id = ? AND discussion_id = ?
+                      AND status != 'completed'
+                """, (workspace_id, discussion_id)).fetchone()["total"]
+                if unfinished:
+                    raise ValueError(
+                        "Cannot complete discussion while assignments are unfinished"
+                    )
+
+            db.execute("""
+                UPDATE agent_discussions
+                SET status = ?, updated_at = ?
+                WHERE id = ? AND workspace_id = ?
+            """, (status, _now(), discussion_id, workspace_id))
+            row = db.execute("""
+                SELECT * FROM agent_discussions
+                WHERE id = ? AND workspace_id = ?
+            """, (discussion_id, workspace_id)).fetchone()
+            return dict(row)
+
+    def append_agent_message(
+        self, workspace_id: str, discussion_id: str,
+        speaker_type: str, content: str, agent_id: str | None = None
+    ) -> dict:
+        if speaker_type not in ("user", "agent", "leader", "system"):
+            raise ValueError("Invalid discussion speaker type")
+        if not content.strip():
+            raise ValueError("Message content is required")
+        if speaker_type in ("agent", "leader"):
+            if not agent_id or not self.get_agent_identity(workspace_id, agent_id):
+                raise ValueError("Agent does not belong to this workspace")
+        elif agent_id is not None:
+            raise ValueError("User and system messages cannot have an agent identity")
+
+        now, message_id = _now(), str(uuid4())
+        with self._connection() as db:
+            discussion = db.execute("""
+                SELECT id FROM agent_discussions
+                WHERE id=? AND workspace_id=?
+            """, (discussion_id, workspace_id)).fetchone()
+            if not discussion:
+                raise ValueError("Discussion does not belong to this workspace")
+
+            sequence = db.execute("""
+                SELECT COALESCE(MAX(sequence), 0) + 1
+                FROM agent_messages
+                WHERE workspace_id=? AND discussion_id=?
+            """, (workspace_id, discussion_id)).fetchone()[0]
+
+            db.execute("""
+                INSERT INTO agent_messages
+                (id, workspace_id, discussion_id, agent_id, speaker_type,
+                 sequence, content, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (message_id, workspace_id, discussion_id, agent_id,
+                  speaker_type, sequence, content.strip(), now))
+            db.execute("""
+                UPDATE agent_discussions SET updated_at=?
+                WHERE id=? AND workspace_id=?
+            """, (now, discussion_id, workspace_id))
+            row = db.execute(
+                "SELECT * FROM agent_messages WHERE id=? AND workspace_id=?",
+                (message_id, workspace_id)
+            ).fetchone()
+            return dict(row)
+
+    def list_agent_messages(
+        self, workspace_id: str, discussion_id: str
+    ) -> list[dict]:
+        with self._connection() as db:
+            discussion = db.execute("""
+                SELECT id FROM agent_discussions
+                WHERE id=? AND workspace_id=?
+            """, (discussion_id, workspace_id)).fetchone()
+            if not discussion:
+                raise ValueError("Discussion does not belong to this workspace")
+            rows = db.execute("""
+                SELECT * FROM agent_messages
+                WHERE workspace_id=? AND discussion_id=?
+                ORDER BY sequence
+            """, (workspace_id, discussion_id)).fetchall()
+            return [dict(row) for row in rows]
 
     def create_workspace(self, name: str, purpose: str) -> Workspace:
         name = name.strip()

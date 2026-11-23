@@ -116,6 +116,12 @@ class ModelRouter:
         self.env = os.environ if environ is None else environ
         self.max_tokens = int(max_tokens)
         self.temperature = float(temperature)
+        try:
+            self.request_timeout = max(1.0, float(
+                self.env.get("SOVEREIGN_MODEL_TIMEOUT_SECONDS", "45")
+            ))
+        except (TypeError, ValueError):
+            self.request_timeout = 45.0
         self.checkout_url = self.env.get("SOVEREIGN_PREMIUM_URL", "").strip()
         self.configuration_warnings: list[str] = []
         self._clock = clock or time.monotonic
@@ -154,6 +160,7 @@ class ModelRouter:
             return ChatOpenAI(
                 model=model, api_key=key, base_url=base_url,
                 max_tokens=self.max_tokens, temperature=self.temperature,
+                timeout=self.request_timeout, max_retries=0,
                 default_headers=extra_headers or {},
             )
         except Exception as exc:
@@ -207,7 +214,8 @@ class ModelRouter:
                 ]
                 for model in models:
                     kwargs = dict(api_key=groq_key, model=model,
-                                  max_tokens=self.max_tokens, temperature=self.temperature)
+                                  max_tokens=self.max_tokens, temperature=self.temperature,
+                                  timeout=self.request_timeout, max_retries=0)
                     if "qwen3.8" in model or "qwen3.6" in model:
                         kwargs.update(reasoning_effort="none", reasoning_format="hidden")
                     try:

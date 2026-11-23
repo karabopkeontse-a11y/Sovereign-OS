@@ -1,0 +1,128 @@
+"""Durable agent collaboration recovery persistence tests."""
+import sqlite3
+import tempfile
+from contextlib import closing
+import unittest
+from pathlib import Path
+
+from sovereign_core.store import TaskStore
+
+
+class CollaborationRecoveryStoreTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.store = TaskStore(Path(self.temp.name) / "recovery.sqlite3")
+        self.workspace = self.store.create_workspace("Recovery Test", "Testing recovery")
+        self.agent = self.store.create_agent_identity(
+            self.workspace.id, "specialist", "Research Agent"
+        )
+        self.discussion = self.store.create_agent_discussion(
+            self.workspace.id, "Recoverable mission", self.agent["id"]
+        )
+        self.run = self.store.create_agent_collaboration_run(
+            self.workspace.id, self.discussion["id"],
+            "Research a reliable launch plan", memory_context="Existing context",
+            specialist_ids=["specialist-0"], max_agents=2,
+        )
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def test_schema_v4_is_applied_without_removing_existing_tables(self):
+        # sqlite3.Connection.__exit__ commits/rolls back but does not close;
+        # explicitly close it so Windows can remove the TemporaryDirectory.
+        with closing(sqlite3.connect(self.store.db_path)) as db:
+            version = db.execute(
+                "SELECT MAX(version) FROM schema_migrations"
+            ).fetchone()[0]
+            tables = {
+                row[0] for row in db.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+        self.assertEqual(version, 4)
+        self.assertTrue({
+            "plugins", "workspace_metadata", "workspace_plugins",
+            "agent_discussions", "agent_assignments",
+            "agent_collaboration_runs", "agent_collaboration_checkpoints",
+        }.issubset(tables))
+
+    def test_run_and_checkpoints_are_persisted_and_workspace_scoped(self):
+        checkpoint = self.store.create_agent_collaboration_checkpoint(
+            self.workspace.id, self.run["id"], self.discussion["id"],
+            "proposals", self.agent["id"],
+        )
+        self.assertEqual(checkpoint["status"], "pending")
+        self.assertEqual(
+            self.store.get_agent_collaboration_run(
+                self.workspace.id, self.run["id"]
+            )["task"],
+            "Research a reliable launch plan",
+        )
+        self.assertEqual(
+            len(self.store.list_agent_collaboration_checkpoints(
+                self.workspace.id, self.run["id"]
+            )),
+            1,
+        )
+        self.assertIsNone(self.store.get_agent_collaboration_run(
+            "another-workspace", self.run["id"]
+        ))
+        with self.assertRaises(ValueError):
+            self.store.list_agent_collaboration_checkpoints(
+                "another-workspace", self.run["id"]
+            )
+
+    def test_checkpoint_completion_and_message_are_atomic_and_idempotent(self):
+        checkpoint = self.store.create_agent_collaboration_checkpoint(
+            self.workspace.id, self.run["id"], self.discussion["id"],
+            "proposals", self.agent["id"],
+        )
+        first = self.store.complete_agent_collaboration_checkpoint(
+            self.workspace.id, checkpoint["id"],
+            "Evidence-based proposal", "agent", self.agent["id"],
+            provider="Groq", model="free-model",
+        )
+        second = self.store.complete_agent_collaboration_checkpoint(
+            self.workspace.id, checkpoint["id"],
+            "Evidence-based proposal", "agent", self.agent["id"],
+            provider="Groq", model="free-model",
+        )
+        messages = self.store.list_agent_messages(
+            self.workspace.id, self.discussion["id"]
+        )
+        self.assertFalse(first["already_completed"])
+        self.assertTrue(second["already_completed"])
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(messages[0]["content"], "Evidence-based proposal")
+        self.assertEqual(first["message"]["id"], second["message"]["id"])
+        self.assertEqual(second["checkpoint"]["status"], "completed")
+
+    def test_checkpoint_cannot_be_completed_by_another_agent(self):
+        checkpoint = self.store.create_agent_collaboration_checkpoint(
+            self.workspace.id, self.run["id"], self.discussion["id"],
+            "proposals", self.agent["id"],
+        )
+        with self.assertRaises(ValueError):
+            self.store.complete_agent_collaboration_checkpoint(
+                self.workspace.id, checkpoint["id"], "Wrong owner",
+                "agent", "foreign-agent",
+            )
+
+    def test_run_status_and_stage_progress_survive_reopening_store(self):
+        self.store.update_agent_collaboration_run(
+            self.workspace.id, self.run["id"],
+            status="running", current_stage="proposals",
+            increment_attempts=True,
+        )
+        reopened = TaskStore(self.store.db_path)
+        recovered = reopened.get_agent_collaboration_run(
+            self.workspace.id, self.run["id"]
+        )
+        self.assertEqual(recovered["status"], "running")
+        self.assertEqual(recovered["current_stage"], "proposals")
+        self.assertEqual(recovered["attempts"], 1)
+
+
+if __name__ == "__main__":
+    unittest.main()
