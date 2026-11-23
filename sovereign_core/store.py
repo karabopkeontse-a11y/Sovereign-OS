@@ -490,6 +490,19 @@ class TaskStore:
                 )
             return dict(row)
 
+    def claim_agent_collaboration_run(
+        self, workspace_id: str, run_id: str
+    ) -> bool:
+        """Atomically claim a queued run so concurrent workers cannot duplicate it."""
+        with self._connection() as db:
+            cursor = db.execute("""
+                UPDATE agent_collaboration_runs
+                SET status='running', updated_at=?
+                WHERE id=? AND workspace_id=?
+                  AND status IN ('queued', 'retryable')
+            """, (_now(), run_id, workspace_id))
+            return cursor.rowcount == 1
+
     def get_agent_collaboration_run_by_request_key(
         self, workspace_id: str, request_key: str
     ) -> dict | None:
