@@ -12,7 +12,6 @@ import logging
 import os
 import signal
 import threading
-import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -157,6 +156,8 @@ class MissionWorkerSupervisor:
         heartbeat.start()
         try:
             result = self.executor(job, context)
+            finished.set()
+            heartbeat.join(timeout=max(1.0, self.heartbeat_interval_seconds + 0.5))
             if context.lease_lost:
                 self._increment("lease_losses")
                 return
