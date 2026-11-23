@@ -1382,13 +1382,13 @@ def create_app(
             raise HTTPException(409, "Earlier plan steps must be verified before this step can be queued.")
         if problem.status in {"blocked", "failed", "completed", "cancelled"}:
             raise HTTPException(409, "This task is closed to further execution.")
+        if step.permission_level != "read_only" and step.status != "approved":
+            raise HTTPException(403, "This step requires persisted human approval before it can be queued.")
         if step.status not in {"planned", "approved"}:
             raise HTTPException(409, "Only planned or approved steps can be queued.")
         spec = tasks.get_step_spec(step.id)
         if not spec or spec.get("tool_name") not in AGENT_TOOLS:
             raise HTTPException(403, "Only registered workspace-tool steps can be queued.")
-        if step.permission_level != "read_only" and step.status != "approved":
-            raise HTTPException(403, "This step requires persisted human approval before it can be queued.")
         try:
             validate_tool_input(spec["tool_name"], json.loads(spec["input_json"]))
         except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
