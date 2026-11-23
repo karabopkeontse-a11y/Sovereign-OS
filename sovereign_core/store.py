@@ -2060,12 +2060,19 @@ class TaskStore:
         with self._connection() as db:
             db.execute("BEGIN IMMEDIATE")
             # A worker that exhausted its retry budget must not remain running forever.
-            exhausted = db.execute("""
+            exhausted_sql = """
                 SELECT id, worker_id FROM mission_jobs
                 WHERE workspace_id=? AND status='running'
                   AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?
                   AND attempts >= max_attempts
-            """, (workspace_id, now)).fetchall()
+            """
+            exhausted_params = [workspace_id, now]
+            if payload_kind is not None:
+                exhausted_sql += " AND json_extract(payload_json, '$.kind')=?"
+                exhausted_params.append(payload_kind)
+            exhausted = db.execute(
+                exhausted_sql, exhausted_params
+            ).fetchall()
             for stale in exhausted:
                 db.execute("""
                     UPDATE mission_jobs SET status='failed', worker_id='',
