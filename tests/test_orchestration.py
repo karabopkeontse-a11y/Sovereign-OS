@@ -97,6 +97,7 @@ class FakeRouter:
         self.calls = 0
         self.invocations = []
         self.fail_at = None
+        self.empty_at = None
 
     def invoke(self, messages, start_index=None, **kwargs):
         index = start_index or 0
@@ -110,7 +111,10 @@ class FakeRouter:
         )
         self.invocations.append({"index": index, "prompt": prompt})
         response = SimpleNamespace(
-            content=f"Test response {self.calls}. Reviewed the available evidence."
+            content=(
+                "" if self.empty_at == self.calls
+                else f"Test response {self.calls}. Reviewed the available evidence."
+            )
         )
         return response, info, index
 
@@ -283,6 +287,45 @@ class DurableOrchestrationRecoveryTests(unittest.TestCase):
             self.assertTrue(all(item["status"] == "completed" for item in checkpoints))
             self.assertEqual(len(messages), 8)
             self.assertEqual(sum(m["speaker_type"] == "user" for m in messages), 1)
+            self.assertEqual(router.calls, 8)
+
+
+    def test_empty_model_response_uses_one_configured_fallback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = TaskStore(Path(directory) / "empty-response.sqlite3")
+            workspace = store.create_workspace(
+                "Empty Response Test", "Test provider fallback"
+            )
+            leader = store.create_agent_identity(
+                workspace.id, "leader", "Sovereign Lead"
+            )
+            discussion = store.create_agent_discussion(
+                workspace.id, "Handle empty provider output", leader["id"]
+            )
+            run = store.create_agent_collaboration_run(
+                workspace.id, discussion["id"], "Prepare a safe launch plan",
+                specialist_ids=["specialist-0", "specialist-1"],
+                max_agents=2, request_key="empty-response-fallback-test",
+            )
+            router = FakeRouter()
+            router.empty_at = 1
+
+            result = run_collaboration(
+                store, router, workspace, run["task"],
+                specialist_ids=["specialist-0", "specialist-1"],
+                run_id=run["id"], discussion_id=discussion["id"],
+            )
+
+            checkpoints = store.list_agent_collaboration_checkpoints(
+                workspace.id, run["id"]
+            )
+            self.assertEqual(result["status"], "completed")
+            self.assertEqual(len(checkpoints), 7)
+            self.assertTrue(all(item["status"] == "completed" for item in checkpoints))
+            self.assertEqual(checkpoints[0]["provider"], "openrouter")
+            self.assertEqual(len(store.list_agent_messages(
+                workspace.id, discussion["id"]
+            )), 8)
             self.assertEqual(router.calls, 8)
 
 
