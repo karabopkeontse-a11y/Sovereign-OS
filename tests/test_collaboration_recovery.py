@@ -28,7 +28,7 @@ class CollaborationRecoveryStoreTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def test_schema_v5_is_applied_without_removing_existing_tables(self):
+    def test_schema_v6_is_applied_without_removing_existing_tables(self):
         # sqlite3.Connection.__exit__ commits/rolls back but does not close;
         # explicitly close it so Windows can remove the TemporaryDirectory.
         with closing(sqlite3.connect(self.store.db_path)) as db:
@@ -45,12 +45,13 @@ class CollaborationRecoveryStoreTests(unittest.TestCase):
                     "PRAGMA table_info(agent_collaboration_runs)"
                 )
             }
-        self.assertEqual(version, 5)
+        self.assertEqual(version, 6)
         self.assertIn("request_key", run_columns)
         self.assertTrue({
             "plugins", "workspace_metadata", "workspace_plugins",
             "agent_discussions", "agent_assignments",
             "agent_collaboration_runs", "agent_collaboration_checkpoints",
+            "mission_jobs", "mission_job_events",
         }.issubset(tables))
 
     def test_discussion_and_run_are_created_atomically_for_one_key(self):
