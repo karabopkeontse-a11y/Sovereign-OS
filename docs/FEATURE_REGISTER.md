@@ -10,8 +10,8 @@ Each capability must have a real user outcome, permission model, online/offline 
 
 | Measure | Count |
 |---|---:|
-| Verified / released | 16 |
-| In testing | 1 |
+| Verified / released | 17 |
+| In testing | 0 |
 | Planned | 0 |
 | Minimum product target | 200 |
 
@@ -44,7 +44,9 @@ Ten mission-runtime capabilities are now counted as verified based on the user's
 | SCHED-005 | Explicit daylight-saving-time policies | Choose how nonexistent and ambiguous local times are handled | Schedule-owner configuration | Offline-capable | SCHED-004; Python zoneinfo | Spring-forward skip/shift and fall-back first/second-fold tests | VERIFIED |
 | SCHED-006 | Idempotent recurring occurrence promotion | Catch up due occurrences without duplicate queue jobs after restart or concurrent scheduler workers | Workspace-scoped scheduler/queue permission | Offline-capable | SCHED-004; mission queue | Missed-run catch-up, unique occurrence keys, concurrent promotion and audit tests | VERIFIED |
 
-| SCHED-007 | Independent mission scheduler supervisor | Promote due one-time and recurring schedules without relying on API requests or browser sessions | Workspace-scoped scheduler process; read/promote only | Offline-capable | SCHED-001 through SCHED-006; SQLite store | Multi-workspace promotion, repeated-cycle idempotency, failure isolation, health reporting, bounded loop and graceful stop | TESTING |
+| SCHED-007 | Independent mission scheduler supervisor | Promote due one-time and recurring schedules without relying on API requests or browser sessions | Workspace-scoped scheduler process; read/promote only | Offline-capable | SCHED-001 through SCHED-006; SQLite store | Multi-workspace promotion, repeated-cycle idempotency, failure isolation, health reporting, bounded loop and graceful stop; user-reported local acceptance: supervisor 5/5 and mission runtime 23/23 passed (2026-11-23) | VERIFIED |
+
+SCHED-007 is verified from the user's focused local acceptance results: scheduler supervisor 5/5 and mission runtime 23/23 passed (2026-11-23). This is not a full-repository test claim.
 
 ## Backlog policy
 
