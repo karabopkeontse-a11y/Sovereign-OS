@@ -11,11 +11,12 @@ Each capability must have a real user outcome, permission model, online/offline 
 | Measure | Count |
 |---|---:|
 | Verified / released | 20 |
+| In development | 1 |
 | In testing | 0 |
 | Planned | 0 |
 | Minimum product target | 200 |
 
-Mission queue, scheduler, and worker capabilities are counted only where their focused acceptance suites have passed. MISSION-013 completed payload-kind isolation, worker recovery, and mission runtime acceptance (worker supervisor 11/11, registered-agent worker 4/4, mission runtime 23/23; user-reported local results on 2026-11-23). The 200-capability target remains in progress.
+Mission queue, scheduler, and worker capabilities are counted only where their focused acceptance suites have passed. MISSION-013 completed payload-kind isolation, worker recovery, and mission runtime acceptance (worker supervisor 11/11, registered-agent worker 4/4, mission runtime 23/23; user-reported local results on 2026-11-23). MISSION-014 is in development: the API, desktop worker lifecycle, ordered safe-step chaining, and Agent Collaboration queue UI are implemented in the branch; focused local acceptance is pending. The 200-capability target remains in progress.
 
 ## Mission runtime
 
@@ -37,6 +38,7 @@ Mission queue, scheduler, and worker capabilities are counted only where their f
 | MISSION-012 | Permission-aware registered agent step execution and recovery | Execute approved workspace tools once, persist execution intent and reconcile interrupted file operations without overwriting conflicting data | Workspace-scoped task/step; persisted approval for non-read-only actions; registered tools only | Offline-capable workspace tools | MISSION-011; TaskStore; registered workspace tools | Atomic concurrent claim; receipt persistence and replay; crash after note creation; effect-applied recovery; conflicting-file protection; worker adapter approval enforcement and shutdown replay (4/4); worker heartbeat lease-loss and process-restart reclaim (11/11); service suite (9/9) | VERIFIED |
 
 | MISSION-013 | Mission payload-type isolation | Run one registered mission family without consuming unrelated scheduled or future mission types | Worker claims are filtered by an explicit payload kind; workspace and lease rules remain unchanged | Offline-capable queue routing | MISSION-001 through MISSION-012 | User-reported local acceptance: worker supervisor 11/11 (including payload-kind isolation and unrelated expired-lease protection), registered-agent worker 4/4, mission runtime 23/23 | VERIFIED |
+| MISSION-014 | Desktop-integrated registered-agent mission runtime | Queue approved workspace-tool steps from Agent Collaboration and continue verified safe steps in the background across browser disconnects | Workspace-scoped enqueue and status; registered-tool allowlist; persisted approval for non-read-only steps; explicit worker enablement | Offline-capable registered workspace tools | MISSION-011 through MISSION-013; API lifespan; desktop launcher; Agent Collaboration UI | New API and worker integration tests cover durable enqueue, idempotency, ordered steps, approval boundary, workspace isolation, background completion and shutdown; local acceptance pending | IN DEVELOPMENT |
 
 MISSION-012 is VERIFIED from the user's reported focused local acceptance results on 2026-11-23: execution service 9/9, registered-agent worker integration 4/4, and worker supervisor/recovery 11/11. The lease-loss test confirms a stale worker cannot persist its result after losing heartbeat ownership; the restart test confirms a new worker reclaims an expired lease and completes the existing mission. MISSION-013 is VERIFIED from the user's reported focused local acceptance results on 2026-11-23: worker supervisor 11/11, registered-agent worker 4/4, and mission runtime 23/23. These are focused acceptance results, not a full-repository test claim.
 
